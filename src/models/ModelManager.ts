@@ -1,10 +1,5 @@
 import type { ModelConfig, ModelLoadProgress } from '../types'
 
-interface HuggingFaceRepo {
-  id: string
-  modelId: string
-}
-
 export class ModelManager {
   private models: Map<string, ModelConfig> = new Map()
   private activeModelId: string | null = null

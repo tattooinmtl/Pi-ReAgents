@@ -1,25 +1,17 @@
 import { useState, useRef, useEffect } from 'react'
-import type { Message, PersonalityConfig, Skill } from '../types'
-
-interface PreviewData {
-  code: string
-  lang: string
-}
+import type { Message, Skill } from '../types'
 
 interface ChatProps {
   messages: Message[]
   isProcessing: boolean
-  personality: PersonalityConfig
   enabledSkills: Skill[]
   onSend: (message: string) => void
   onStop: () => void
-  onPreview: (data: PreviewData) => void
   onApplyCode?: (code: string, lang: string) => void
+  onOpenInCodingSpace?: (code: string, lang: string) => void
 }
 
-const PREVIEWABLE = ['html', 'js', 'javascript', 'ts', 'typescript', 'jsx', 'tsx', 'svg']
-
-function ChatMessage({ msg, onPreview, onApplyCode }: { msg: Message; onPreview: (d: PreviewData) => void; onApplyCode?: (c: string, l: string) => void }) {
+function ChatMessage({ msg, onApplyCode, onOpenInCodingSpace }: { msg: Message; onApplyCode?: (c: string, l: string) => void; onOpenInCodingSpace?: (c: string, l: string) => void }) {
   const blocks: JSX.Element[] = []
   const parts = msg.content.split(/(```\w*\n[\s\S]*?\n```)/g)
   let idx = 0
@@ -34,14 +26,14 @@ function ChatMessage({ msg, onPreview, onApplyCode }: { msg: Message; onPreview:
           <div className="code-block-header">
             <span>{lang}</span>
             <div className="code-block-actions">
+            {onOpenInCodingSpace && (
+              <button className="btn btn-codespace" onClick={() => onOpenInCodingSpace(code, lang)} title="Open in coding space">
+                Code Space
+              </button>
+            )}
             {onApplyCode && (
               <button className="btn btn-apply" onClick={() => onApplyCode(code, lang)} title="Write to open file">
                 Apply
-              </button>
-            )}
-            {PREVIEWABLE.includes(lang) && (
-              <button className="btn btn-run" onClick={() => onPreview({ code, lang })}>
-                Run
               </button>
             )}
           </div>
@@ -67,7 +59,7 @@ function ChatMessage({ msg, onPreview, onApplyCode }: { msg: Message; onPreview:
   )
 }
 
-export function Chat({ messages, isProcessing, personality, enabledSkills, onSend, onStop, onPreview, onApplyCode }: ChatProps) {
+export function Chat({ messages, isProcessing, enabledSkills, onSend, onStop, onApplyCode, onOpenInCodingSpace }: ChatProps) {
   const [input, setInput] = useState('')
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -110,7 +102,7 @@ export function Chat({ messages, isProcessing, personality, enabledSkills, onSen
           </div>
         )}
         {messages.map((msg) => (
-          <ChatMessage key={msg.id} msg={msg} onPreview={onPreview} onApplyCode={onApplyCode} />
+          <ChatMessage key={msg.id} msg={msg} onApplyCode={onApplyCode} onOpenInCodingSpace={onOpenInCodingSpace} />
         ))}
         {isProcessing && (
           <div className="message message-assistant">

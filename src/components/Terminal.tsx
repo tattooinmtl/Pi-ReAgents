@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
+import { DraggableWindow } from './DraggableWindow'
 
 interface TerminalProps {
   onClose: () => void
@@ -36,45 +37,29 @@ export function Terminal({ onClose }: TerminalProps) {
     setInput('')
   }
 
-  if (!api) {
-    return (
-      <div className="modal-overlay" onClick={onClose}>
-        <div className="terminal-panel" onClick={(e) => e.stopPropagation()}>
-          <div className="terminal-header">
-            <span>Terminal</span>
-            <button className="btn btn-close" onClick={onClose}>×</button>
-          </div>
-          <div className="terminal-body">
-            <p style={{ padding: 20, color: 'var(--text-muted)' }}>Terminal requires Electron. Run with <code>npm run electron:dev</code>.</p>
-          </div>
-        </div>
+  const body = (
+    <>
+      <div className="console-body" style={{ flex: 1, minHeight: 0 }}>
+        {lines.map((line, i) => <pre key={i} className="console-line">{line}</pre>)}
+        <div ref={bottomRef} />
       </div>
-    )
-  }
+      <form className="terminal-input-row" onSubmit={handleSubmit}>
+        <span className="terminal-prompt">&gt;</span>
+        <input
+          ref={inputRef}
+          type="text"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder={api ? 'Type a command...' : 'Terminal requires Electron'}
+          autoFocus
+        />
+      </form>
+    </>
+  )
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="terminal-panel" onClick={(e) => e.stopPropagation()}>
-        <div className="terminal-header">
-          <span>Terminal</span>
-          <button className="btn btn-close" onClick={onClose}>×</button>
-        </div>
-        <div className="terminal-body">
-          {lines.map((line, i) => <pre key={i} className="terminal-line">{line}</pre>)}
-          <div ref={bottomRef} />
-        </div>
-        <form className="terminal-input-row" onSubmit={handleSubmit}>
-          <span className="terminal-prompt">&gt;</span>
-          <input
-            ref={inputRef}
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="Type a command..."
-            autoFocus
-          />
-        </form>
-      </div>
-    </div>
+    <DraggableWindow title="Terminal" initialWidth={640} initialHeight={320} onClose={onClose} dockZone="bottom-left">
+      {body}
+    </DraggableWindow>
   )
 }

@@ -87,6 +87,10 @@ export class NeuralEngine {
           n_predict: personality.maxTokens,
           cache_prompt: true,
           stream: true,
+          mirostat: personality.mirostat ? 2 : 0,
+          mirostat_tau: personality.mirostatTau,
+          mirostat_eta: personality.mirostatEta,
+          n_ctx: personality.contextLength,
         }),
         signal: this.abortController.signal,
       })

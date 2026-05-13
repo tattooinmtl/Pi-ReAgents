@@ -6,8 +6,8 @@ import { ModelManagerUI } from './components/ModelManagerUI'
 import { MemoryViewer } from './components/MemoryViewer'
 import { BottomPanel } from './components/BottomPanel'
 import { Console } from './components/Console'
-import { CodePreview } from './components/CodePreview'
 import { FileExplorer } from './components/FileExplorer'
+import { CodingSpace } from './components/CodingSpace'
 import { Terminal } from './components/Terminal'
 import { NeuralEngine } from './engine/NeuralEngine'
 import { SkillsManager } from './skills/SkillsManager'
@@ -40,12 +40,13 @@ export default function App() {
 
   const [logs, setLogs] = useState<string[]>([])
   const [codeAssistant, setCodeAssistant] = useState(false)
-  const [preview, setPreview] = useState<{ code: string; lang: string } | null>(null)
+  const [codingSpace, setCodingSpace] = useState(false)
   const [showPersonality, setShowPersonality] = useState(false)
   const [showSkills, setShowSkills] = useState(false)
   const [showModels, setShowModels] = useState(false)
   const [showMemory, setShowMemory] = useState(false)
   const [showExplorer, setShowExplorer] = useState(false)
+  const [showConsole, setShowConsole] = useState(false)
   const [showTerminal, setShowTerminal] = useState(false)
   const [explorerRoot, setExplorerRoot] = useState('')
   const [openEditingFile, setOpenEditingFile] = useState<{ path: string; name: string } | null>(null)
@@ -242,12 +243,23 @@ export default function App() {
   const CODE_ASSISTANT_SKILL: Skill = {
     id: 'code-assistant',
     name: 'Code Assistant',
-    description: 'Built-in coding assistant mode',
-    content: 'You are an expert coding assistant. When providing code, always use markdown code blocks with the appropriate language tag. Provide clear, well-commented code. Explain your reasoning before writing code. Follow best practices and design patterns.',
+    description: 'Full-stack project scaffolder and coding assistant',
+    content: `You are an expert full-stack developer and coding assistant. Follow these rules:
+
+1. PROJECT SCAFFOLDING — When asked to start a new project, ask what type: html, node, php, react, python, or markdown. Then create the full file structure with all needed files.
+2. HTML — Always include a linked CSS file (style.css) and a JS file (script.js). Use semantic HTML5 structure.
+3. CSS — Create responsive, modern styles. Include reset/base styles. Use CSS variables for theming.
+4. NODE.JS — Check package.json dependencies. Run 'npm install' when needed. Use express for servers, proper error handling.
+5. PHP — Use modern PHP 8+ practices. Include proper error handling, PDO for databases, prepared statements.
+6. PYTHON — Check requirements.txt or pyproject.toml. Suggest 'pip install' commands for missing dependencies.
+7. MARKDOWN (.md) — Create project plans, README files, documentation with proper structure.
+8. FILE STRUCTURE — When creating a project, output the full folder tree first, then each file in code blocks.
+9. Always use markdown code blocks with language tags (html, css, js, php, py, etc.).
+10. Provide clear explanations alongside code. Follow best practices, accessibility, and security patterns.`,
     path: '',
     enabled: false,
-    tags: ['coding', 'built-in'],
-    version: '1.0.0',
+    tags: ['coding', 'fullstack', 'project-scaffolding', 'built-in'],
+    version: '2.0.0',
   }
 
   const handleOpenFiles = useCallback(async () => {
@@ -272,17 +284,47 @@ export default function App() {
     }
   }, [explorerRoot])
 
-  const handleToggleCodeAssistant = useCallback(() => {
+  const handleToggleCodingSpace = useCallback(async () => {
+    if (!codingSpace) {
+      const api = window.electronAPI
+      if (api) {
+        try {
+          const dir = explorerRoot || await api.getWorkspaceDir()
+          await api.createDirectory(dir).catch(() => {})
+          if (!explorerRoot) setExplorerRoot(dir)
+          setCodingSpace(true)
+          return
+        } catch {}
+      }
+      setCodingSpace(true)
+    } else {
+      setCodingSpace(false)
+    }
+  }, [codingSpace, explorerRoot])
+
+  const handleToggleCodeAssistant = useCallback(async () => {
     const next = !codeAssistant
     setCodeAssistant(next)
-    if (next) {
-      skillsManager.addSkill(CODE_ASSISTANT_SKILL)
-      setSkills(skillsManager.getAllSkills())
-      addLog('Code Assistant mode ON')
-    } else {
+    if (!next) {
       skillsManager.removeSkill('code-assistant')
       setSkills(skillsManager.getAllSkills())
       addLog('Code Assistant mode OFF')
+      return
+    }
+    skillsManager.addSkill(CODE_ASSISTANT_SKILL)
+    setSkills(skillsManager.getAllSkills())
+    addLog('Code Assistant mode ON')
+    const api = window.electronAPI
+    if (api) {
+      try {
+        const dir = await api.getWorkspaceDir()
+        await api.createDirectory(dir).catch(() => {})
+        setExplorerRoot(dir)
+        setCodingSpace(true)
+        addLog('Workspace opened in Coding Space')
+      } catch { setCodingSpace(true) }
+    } else {
+      setCodingSpace(true)
     }
   }, [codeAssistant, skillsManager])
 
@@ -359,9 +401,36 @@ export default function App() {
     setLogs([])
   }, [])
 
-  const handlePreview = useCallback((data: { code: string; lang: string }) => {
-    setPreview(data)
-  }, [])
+  const LANG_EXT: Record<string, string> = {
+    html: 'html', htm: 'html', svg: 'svg', js: 'js', javascript: 'js',
+    ts: 'ts', typescript: 'ts', jsx: 'jsx', tsx: 'tsx',
+    css: 'css', py: 'py', json: 'json', xml: 'xml', yaml: 'yaml', yml: 'yml',
+    md: 'md', sql: 'sql', sh: 'sh', bash: 'sh', bat: 'bat',
+  }
+
+  const handleOpenInCodingSpace = useCallback(async (code: string, lang: string) => {
+    const api = window.electronAPI
+    if (!api) return
+    const ext = LANG_EXT[lang] || 'txt'
+    try {
+      if (!codingSpace) {
+        const dir = await api.getWorkspaceDir().catch(() => '')
+        if (dir) {
+          setExplorerRoot(dir)
+          setCodingSpace(true)
+        }
+      }
+      const root = explorerRoot || await api.getWorkspaceDir().catch(() => '')
+      if (!root) return
+      const name = `ai-gen-${Date.now()}.${ext}`
+      const fullPath = `${root}\\${name}`
+      await api.createFile(fullPath, code)
+      setOpenEditingFile({ path: fullPath, name })
+      addLog(`Opened ${name} in coding space`)
+    } catch (err) {
+      addLog(`Failed: ${err instanceof Error ? err.message : 'error'}`)
+    }
+  }, [codingSpace, explorerRoot])
 
   const handleApplyCode = useCallback(async (code: string, _lang: string) => {
     if (!openEditingFile) {
@@ -454,18 +523,31 @@ export default function App() {
 
   return (
     <div className="app">
-      <Console logs={logs} onClear={handleClearLogs} />
-      <div className="app-main">
-        <Chat
-          messages={messages}
-          isProcessing={isProcessing}
-          personality={personality}
-          enabledSkills={skillsManager.getEnabledSkills()}
-          onSend={handleSend}
-          onStop={handleStop}
-          onPreview={handlePreview}
-          onApplyCode={handleApplyCode}
-        />
+      {showConsole && (
+        <Console logs={logs} onClear={handleClearLogs} onClose={() => setShowConsole(false)} />
+      )}
+      {showTerminal && (
+        <Terminal onClose={() => setShowTerminal(false)} />
+      )}
+      <div className={`app-main ${codingSpace ? 'app-main-split' : ''}`}>
+        <div className={codingSpace ? 'chat-panel' : 'chat-panel-full'}>
+          <Chat
+            messages={messages}
+            isProcessing={isProcessing}
+            enabledSkills={skillsManager.getEnabledSkills()}
+            onSend={handleSend}
+            onStop={handleStop}
+            onApplyCode={handleApplyCode}
+            onOpenInCodingSpace={handleOpenInCodingSpace}
+          />
+        </div>
+        {codingSpace && explorerRoot && (
+          <CodingSpace
+            rootDir={explorerRoot}
+            editingFile={openEditingFile}
+            onFileOpen={(f) => setOpenEditingFile(f)}
+          />
+        )}
       </div>
 
       <BottomPanel
@@ -475,7 +557,10 @@ export default function App() {
         activeSkillsCount={skills.filter(s => s.enabled).length}
         sessionCount={sessions.length}
         codeAssistant={codeAssistant}
+        codingSpace={codingSpace}
         onToggleCodeAssistant={handleToggleCodeAssistant}
+        onToggleCodingSpace={handleToggleCodingSpace}
+        onOpenConsole={() => setShowConsole(true)}
         onOpenTerminal={() => setShowTerminal(true)}
         onOpenFiles={handleOpenFiles}
         onOpenPersonality={() => setShowPersonality(true)}
@@ -531,24 +616,13 @@ export default function App() {
         />
       )}
 
-      {preview && (
-        <CodePreview
-          code={preview.code}
-          lang={preview.lang}
-          onClose={() => setPreview(null)}
-        />
-      )}
-
       {showExplorer && explorerRoot && (
         <FileExplorer
           rootDir={explorerRoot}
           onClose={() => { setShowExplorer(false); setOpenEditingFile(null) }}
           onFileOpen={(f) => setOpenEditingFile(f)}
+          floating
         />
-      )}
-
-      {showTerminal && (
-        <Terminal onClose={() => setShowTerminal(false)} />
       )}
 
       <input

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { DraggableWindow } from './DraggableWindow'
 
 interface FileNode {
   name: string
@@ -19,13 +20,14 @@ interface FileExplorerProps {
   rootDir: string
   onClose: () => void
   onFileOpen?: (file: { path: string; name: string } | null) => void
+  floating?: boolean
 }
 
 type CreateMode = 'none' | 'file' | 'folder'
 
-const PREVIEW_EXTS = ['.html', '.htm', '.svg']
+const PREVIEW_EXTS = ['.html', '.htm', '.svg', '.js']
 
-export function FileExplorer({ rootDir, onClose, onFileOpen }: FileExplorerProps) {
+export function FileExplorer({ rootDir, onClose, onFileOpen, floating }: FileExplorerProps) {
   const [tree, setTree] = useState<FileNode[]>([])
   const [openFile, setOpenFile] = useState<OpenFile | null>(null)
   const [selectedPath, setSelectedPath] = useState('')
@@ -77,13 +79,22 @@ export function FileExplorer({ rootDir, onClose, onFileOpen }: FileExplorerProps
     if (createMode !== 'none') inputRef.current?.focus()
   }, [createMode])
 
-  useEffect(() => {
-    if (!showPreview || !openFile || !iframeRef.current) return
-    const doc = iframeRef.current.contentDocument || iframeRef.current.contentWindow!.document
+  const writePreview = useCallback(() => {
+    const iframe = iframeRef.current
+    if (!iframe || !openFile) return
+    const doc = iframe.contentDocument || iframe.contentWindow!.document
     doc.open()
-    doc.write(openFile.content)
+    if (openFile.name.endsWith('.js')) {
+      doc.write(`<html><body><script>${openFile.content}<\/script></body></html>`)
+    } else {
+      doc.write(openFile.content)
+    }
     doc.close()
-  }, [showPreview, openFile])
+  }, [openFile])
+
+  useEffect(() => {
+    if (showPreview) writePreview()
+  }, [showPreview, writePreview])
 
   const toggleDir = useCallback(async (node: FileNode) => {
     if (!node.isDirectory) return
@@ -230,81 +241,91 @@ export function FileExplorer({ rootDir, onClose, onFileOpen }: FileExplorerProps
     </div>
   )
 
+  const inner = (
+    <div className="explorer-panel" style={floating ? { border: 'none', borderRadius: 0, height: '100%', width: '100%', maxWidth: 'none', flex: 1, display: 'flex' } : {}} onClick={(e) => e.stopPropagation()}>
+      <div className="explorer-sidebar">
+        <div className="explorer-toolbar">
+          <span className="explorer-title">Files</span>
+          <div className="explorer-actions">
+            {createMode !== 'none' ? (
+              <form onSubmit={(e) => { e.preventDefault(); submitCreate() }} className="create-form">
+                <input
+                  ref={inputRef}
+                  className="create-input"
+                  value={createName}
+                  onChange={(e) => setCreateName(e.target.value)}
+                  onBlur={cancelCreate}
+                  placeholder={createMode === 'file' ? 'filename.ext' : 'folder-name'}
+                />
+              </form>
+            ) : (
+              <>
+                <button className="btn btn-sm btn-secondary" onClick={() => startCreate('file')}>+ File</button>
+                <button className="btn btn-sm btn-secondary" onClick={() => startCreate('folder')}>+ Dir</button>
+              </>
+            )}
+            <button className="btn btn-close" onClick={onClose}>×</button>
+          </div>
+        </div>
+        <div className="explorer-tree">
+          {tree.length === 0 && <div className="empty-state" style={{ padding: 20 }}><p>Empty directory</p></div>}
+          {tree.map((node) => renderNode(node, 0))}
+        </div>
+        {status && <div className="explorer-status">{status}</div>}
+      </div>
+
+      <div className="explorer-editor">
+        {openFile ? (
+          <>
+            <div className="explorer-editor-toolbar">
+              <span className="explorer-editor-filename">{openFile.name}</span>
+              <div className="explorer-editor-actions">
+                {showPreview ? (
+                  <button className="btn btn-sm btn-secondary" onClick={() => setShowPreview(false)} style={{ marginRight: 4 }}>← Back to Code</button>
+                ) : (
+                  <button className="btn btn-sm btn-primary" onClick={() => setShowPreview(true)} disabled={!canPreview} title={canPreview ? 'Preview page' : 'Preview only for .html .svg .js files'} style={{ marginRight: 4 }}>
+                    Preview
+                  </button>
+                )}
+                <button className="btn btn-sm btn-primary" onClick={saveFile} disabled={!openFile.modified}>
+                  Save
+                </button>
+                <button className="btn btn-sm btn-secondary" onClick={closeFile} style={{ marginLeft: 4 }}>
+                  Close
+                </button>
+              </div>
+            </div>
+            {showPreview && canPreview ? (
+              <iframe ref={iframeRef} className="explorer-preview-iframe" sandbox="allow-scripts allow-same-origin" title="preview" onLoad={writePreview} />
+            ) : (
+              <textarea
+                className="explorer-editor-textarea"
+                value={openFile.content}
+                onChange={(e) => setOpenFile({ ...openFile, content: e.target.value, modified: true })}
+                spellCheck={false}
+              />
+            )}
+          </>
+        ) : (
+          <div className="explorer-editor-empty">
+            <p>Double-click a file to edit</p>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+
+  if (floating) {
+    return (
+      <DraggableWindow title="File Explorer" initialWidth={760} initialHeight={480} onClose={onClose} dockZone="bottom-left">
+        {inner}
+      </DraggableWindow>
+    )
+  }
+
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="explorer-panel" onClick={(e) => e.stopPropagation()}>
-        <div className="explorer-sidebar">
-          <div className="explorer-toolbar">
-            <span className="explorer-title">Files</span>
-            <div className="explorer-actions">
-              {createMode !== 'none' ? (
-                <form onSubmit={(e) => { e.preventDefault(); submitCreate() }} className="create-form">
-                  <input
-                    ref={inputRef}
-                    className="create-input"
-                    value={createName}
-                    onChange={(e) => setCreateName(e.target.value)}
-                    onBlur={cancelCreate}
-                    placeholder={createMode === 'file' ? 'filename.ext' : 'folder-name'}
-                  />
-                </form>
-              ) : (
-                <>
-                  <button className="btn btn-sm btn-secondary" onClick={() => startCreate('file')}>+ File</button>
-                  <button className="btn btn-sm btn-secondary" onClick={() => startCreate('folder')}>+ Dir</button>
-                </>
-              )}
-              <button className="btn btn-close" onClick={onClose}>×</button>
-            </div>
-          </div>
-          <div className="explorer-tree">
-            {tree.length === 0 && <div className="empty-state" style={{ padding: 20 }}><p>Empty directory</p></div>}
-            {tree.map((node) => renderNode(node, 0))}
-          </div>
-          {status && <div className="explorer-status">{status}</div>}
-        </div>
-
-        <div className="explorer-editor">
-          {openFile ? (
-            <>
-              <div className="explorer-editor-toolbar">
-                <span className="explorer-editor-filename">{openFile.name}</span>
-                <div className="explorer-editor-actions">
-                  {canPreview && (
-                    <button
-                      className="btn btn-sm btn-primary"
-                      onClick={() => setShowPreview(!showPreview)}
-                      style={{ marginRight: 4 }}
-                    >
-                      {showPreview ? 'Editor' : 'Preview'}
-                    </button>
-                  )}
-                  <button className="btn btn-sm btn-primary" onClick={saveFile} disabled={!openFile.modified}>
-                    Save
-                  </button>
-                  <button className="btn btn-sm btn-secondary" onClick={closeFile} style={{ marginLeft: 4 }}>
-                    Close
-                  </button>
-                </div>
-              </div>
-              {showPreview && canPreview ? (
-                <iframe ref={iframeRef} className="explorer-preview-iframe" sandbox="allow-scripts" title="preview" />
-              ) : (
-                <textarea
-                  className="explorer-editor-textarea"
-                  value={openFile.content}
-                  onChange={(e) => setOpenFile({ ...openFile, content: e.target.value, modified: true })}
-                  spellCheck={false}
-                />
-              )}
-            </>
-          ) : (
-            <div className="explorer-editor-empty">
-              <p>Double-click a file to edit</p>
-            </div>
-          )}
-        </div>
-      </div>
+      {inner}
     </div>
   )
 }

@@ -51,15 +51,6 @@ export interface MemorySession {
   preview: string
 }
 
-export interface ChatState {
-  messages: Message[]
-  isProcessing: boolean
-  currentModel: string | null
-  personality: PersonalityConfig
-  skills: Skill[]
-  memory: MemorySession[]
-}
-
 export interface ModelLoadProgress {
   stage: string
   progress: number

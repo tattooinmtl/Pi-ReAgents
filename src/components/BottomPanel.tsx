@@ -7,7 +7,10 @@ interface BottomPanelProps {
   activeSkillsCount: number
   sessionCount: number
   codeAssistant: boolean
+  codingSpace: boolean
   onToggleCodeAssistant: () => void
+  onToggleCodingSpace: () => void
+  onOpenConsole: () => void
   onOpenTerminal: () => void
   onOpenFiles: () => void
   onOpenPersonality: () => void
@@ -25,7 +28,10 @@ export function BottomPanel({
   activeSkillsCount,
   sessionCount,
   codeAssistant,
+  codingSpace,
   onToggleCodeAssistant,
+  onToggleCodingSpace,
+  onOpenConsole,
   onOpenTerminal,
   onOpenFiles,
   onOpenPersonality,
@@ -66,6 +72,16 @@ export function BottomPanel({
         >
           Code {codeAssistant ? 'ON' : 'OFF'}
         </button>
+        <button
+          className={`btn btn-tab ${codingSpace ? 'btn-tab-active' : ''}`}
+          onClick={onToggleCodingSpace}
+          title="Open coding space side panel"
+        >
+          Coding Space
+        </button>
+        <button className="btn btn-tab" onClick={onOpenConsole} title="Console logs">
+          Console
+        </button>
         <button className="btn btn-tab" onClick={onOpenTerminal} title="Terminal">
           Terminal
         </button>
@@ -92,7 +108,7 @@ export function BottomPanel({
         </button>
         {activeModelName && (
           <button className="btn btn-sm btn-danger" onClick={onRestartServer} title="Kill and restart llama-server">
-            Restart Server
+            Reload
           </button>
         )}
       </div>

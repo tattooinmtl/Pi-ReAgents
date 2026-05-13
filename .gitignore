@@ -1,0 +1,8 @@
+node_modules/
+dist/
+memory/
+*.gguf
+*.ggml
+*.log
+.env
+.DS_Store

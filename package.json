@@ -1,0 +1,33 @@
+{
+  "name": "pi-reagent",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pi-ReAgents AI — Advanced Llama.cpp interface with skills, memory, and model management",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:5076 && electron . --dev\"",
+    "electron:build": "vite build && electron-builder",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src --ext .ts,.tsx"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^9.0.1",
+    "node-llama-cpp": "^3.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "concurrently": "^8.2.2",
+    "electron": "^31.1.0",
+    "electron-builder": "^24.13.3",
+    "typescript": "^5.5.3",
+    "vite": "^5.3.4",
+    "wait-on": "^7.2.0"
+  }
+}

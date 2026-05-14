@@ -1,25 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-
-interface FileNode {
-  name: string
-  path: string
-  isDirectory: boolean
-  expanded?: boolean
-  children?: FileNode[]
-}
-
-interface OpenFile {
-  path: string
-  name: string
-  content: string
-  modified: boolean
-}
+import type { FileNode, OpenFile } from '../types'
 
 interface CodingSpaceProps {
   rootDir: string
   editingFile: { path: string; name: string } | null
   onFileOpen: (file: { path: string; name: string } | null) => void
 }
+
+type ClipboardEntry = { mode: 'cut' | 'copy'; path: string; isDir: boolean }
 
 const PREVIEW_EXTS = ['.html', '.htm', '.svg', '.js', '.jsx', '.ts', '.tsx', '.css']
 
@@ -36,11 +24,10 @@ export function CodingSpace({ rootDir, editingFile, onFileOpen }: CodingSpacePro
   const [renameTarget, setRenameTarget] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; path: string; isDir: boolean } | null>(null)
-  const [clipboard, setClipboard] = useState<{ mode: 'cut' | 'copy'; path: string } | null>(null)
+  const [clipboard, setClipboard] = useState<ClipboardEntry | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const renameRef = useRef<HTMLInputElement>(null)
-  const dbRef = useRef(false)
 
   const api = window.electronAPI
 
@@ -65,7 +52,7 @@ export function CodingSpace({ rootDir, editingFile, onFileOpen }: CodingSpacePro
   }, [api])
 
   useEffect(() => {
-    loadDir(rootDir).then((n) => { setTree(n); setSelectedDir(rootDir) })
+    loadDir(rootDir).then((nodes) => { setTree(nodes); setSelectedDir(rootDir) })
   }, [rootDir, loadDir])
 
   useEffect(() => {
@@ -75,7 +62,7 @@ export function CodingSpace({ rootDir, editingFile, onFileOpen }: CodingSpacePro
       setOpenFile({ path: editingFile.path, name: editingFile.name, content, modified: false })
       setShowPreview(false)
     }).catch(() => {})
-  }, [editingFile])
+  }, [editingFile]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (creating !== 'none') inputRef.current?.focus()
@@ -110,24 +97,27 @@ export function CodingSpace({ rootDir, editingFile, onFileOpen }: CodingSpacePro
   }, [showPreview, writePreview])
 
   const refreshTree = useCallback(async () => {
-    const rec = async (d: string): Promise<FileNode[]> => {
-      const entries = await loadDir(d)
-      for (const e of entries) {
-        if (e.isDirectory && (selectedDir.startsWith(e.path) || e.path === selectedDir)) {
-          e.expanded = true; e.children = await rec(e.path)
+    const loadRecursive = async (dir: string): Promise<FileNode[]> => {
+      const entries = await loadDir(dir)
+      for (const entry of entries) {
+        if (entry.isDirectory && (selectedDir.startsWith(entry.path) || entry.path === selectedDir)) {
+          entry.expanded = true
+          entry.children = await loadRecursive(entry.path)
         }
       }
       return entries
     }
-    setTree(await rec(rootDir))
+    setTree(await loadRecursive(rootDir))
   }, [rootDir, selectedDir, loadDir])
 
   const toggleDir = useCallback(async (node: FileNode) => {
     if (!node.isDirectory) return
     setSelectedDir(node.path)
-    const u = { ...node, expanded: !node.expanded }
-    if (!node.expanded && (!u.children || u.children.length === 0)) u.children = await loadDir(node.path)
-    setTree((prev) => rep(prev, node.path, u))
+    const updated = { ...node, expanded: !node.expanded }
+    if (!node.expanded && (!updated.children || updated.children.length === 0)) {
+      updated.children = await loadDir(node.path)
+    }
+    setTree((prev) => replaceNode(prev, node.path, updated))
   }, [loadDir])
 
   const openContent = useCallback(async (node: FileNode) => {
@@ -140,16 +130,18 @@ export function CodingSpace({ rootDir, editingFile, onFileOpen }: CodingSpacePro
     } catch { setStatus(`Error opening ${node.name}`) }
   }, [api, openFile, onFileOpen])
 
+  // Single-click: select (highlight). Double-click: open.
   const handleClick = useCallback((node: FileNode) => {
-    if (node.isDirectory) { toggleDir(node); return }
-    setSelectedPath(node.path)
-    dbRef.current = false
-    setTimeout(() => { if (dbRef.current) openContent(node) }, 200)
-  }, [toggleDir, openContent])
+    if (node.isDirectory) {
+      toggleDir(node)
+    } else {
+      setSelectedPath(node.path)
+    }
+  }, [toggleDir])
 
   const handleDblClick = useCallback((node: FileNode) => {
     if (node.isDirectory) return
-    dbRef.current = true; openContent(node)
+    openContent(node)
   }, [openContent])
 
   const handleCtx = useCallback((e: React.MouseEvent, node: FileNode) => {
@@ -160,116 +152,177 @@ export function CodingSpace({ rootDir, editingFile, onFileOpen }: CodingSpacePro
 
   const ctxAction = useCallback(async (action: string) => {
     if (!api || !ctxMenu) return
-    const p = ctxMenu.path
-    const name = p.split('\\').pop() || ''
-    const parent = p.split('\\').slice(0, -1).join('\\')
+    const targetPath = ctxMenu.path
+    const targetName = targetPath.split('\\').pop() || ''
+    const parentDir = targetPath.split('\\').slice(0, -1).join('\\')
     setCtxMenu(null)
 
-    if (action === 'delete') { setConfirmDelPath(p); return }
-    if (action === 'cut' || action === 'copy') { setClipboard({ mode: action, path: p }); setStatus(`${action === 'cut' ? 'Cut' : 'Copied'} ${name}`); return }
-    if (action === 'rename') { setRenameTarget(p); setRenameValue(name); return }
+    if (action === 'delete') {
+      setConfirmDelPath(targetPath)
+      return
+    }
+
+    if (action === 'cut' || action === 'copy') {
+      setClipboard({ mode: action, path: targetPath, isDir: ctxMenu.isDir })
+      setStatus(`${action === 'cut' ? 'Cut' : 'Copied'} ${targetName}`)
+      return
+    }
+
+    if (action === 'rename') {
+      if (ctxMenu.isDir) {
+        setStatus('Directory rename is not supported — please use the file system.')
+        return
+      }
+      setRenameTarget(targetPath)
+      setRenameValue(targetName)
+      return
+    }
+
     if (action === 'paste' && clipboard) {
-      const dest = ctxMenu.isDir ? `${p}\\${clipboard.path.split('\\').pop()}` : `${parent}\\${clipboard.path.split('\\').pop()}`
+      if (clipboard.isDir) {
+        setStatus('Directory paste is not supported.')
+        return
+      }
+      const destDir = ctxMenu.isDir ? targetPath : parentDir
+      const dest = `${destDir}\\${clipboard.path.split('\\').pop()}`
       try {
+        const content = await api.readFile(clipboard.path)
+        await api.createFile(dest, content)
         if (clipboard.mode === 'cut') {
-          const content = await api.readFile(clipboard.path)
-          await api.createFile(dest, content)
           await api.deleteEntry(clipboard.path)
-        } else {
-          const content = await api.readFile(clipboard.path)
-          await api.createFile(dest, content)
+          if (openFile?.path === clipboard.path) { setOpenFile(null); onFileOpen(null) }
         }
-        if (openFile?.path === clipboard.path && clipboard.mode === 'cut') { setOpenFile(null); onFileOpen(null) }
         setClipboard(null)
         setStatus(`Pasted to ${dest.split('\\').pop()}`)
         await refreshTree()
-      } catch (err) { setStatus(`Paste failed: ${err instanceof Error ? err.message : 'error'}`) }
+      } catch (err) {
+        setStatus(`Paste failed: ${err instanceof Error ? err.message : 'error'}`)
+      }
       return
     }
+
     if (action === 'saveas') {
-      const newName = prompt('Save as:', name)
+      if (ctxMenu.isDir) {
+        setStatus('Save As is not supported for directories.')
+        return
+      }
+      const newName = prompt('Save as:', targetName)
       if (!newName) return
-      const dest = `${parent}\\${newName}`
+      const dest = `${parentDir}\\${newName}`
       try {
-        const content = await api.readFile(p)
+        const content = await api.readFile(targetPath)
         await api.createFile(dest, content)
         setStatus(`Saved as ${newName}`)
         await refreshTree()
-      } catch (err) { setStatus(`Save as failed: ${err instanceof Error ? err.message : 'error'}`) }
-      return
+      } catch (err) {
+        setStatus(`Save as failed: ${err instanceof Error ? err.message : 'error'}`)
+      }
     }
   }, [api, ctxMenu, clipboard, openFile, onFileOpen, refreshTree])
 
   const submitRename = useCallback(async () => {
     if (!api || !renameTarget || !renameValue.trim()) { setRenameTarget(null); return }
-    const parent = renameTarget.split('\\').slice(0, -1).join('\\')
-    const dest = `${parent}\\${renameValue.trim()}`
+    const parentDir = renameTarget.split('\\').slice(0, -1).join('\\')
+    const dest = `${parentDir}\\${renameValue.trim()}`
     try {
       const content = await api.readFile(renameTarget)
       await api.createFile(dest, content)
       await api.deleteEntry(renameTarget)
       if (openFile?.path === renameTarget) {
-        setOpenFile({ ...openFile, path: dest, name: renameValue.trim() })
+        const renamed = { ...openFile, path: dest, name: renameValue.trim() }
+        setOpenFile(renamed)
         onFileOpen({ path: dest, name: renameValue.trim() })
       }
       setStatus(`Renamed to ${renameValue.trim()}`)
       await refreshTree()
-    } catch (err) { setStatus(`Rename failed: ${err instanceof Error ? err.message : 'error'}`) }
+    } catch (err) {
+      setStatus(`Rename failed: ${err instanceof Error ? err.message : 'error'}`)
+    }
     setRenameTarget(null)
   }, [api, renameTarget, renameValue, openFile, onFileOpen, refreshTree])
 
   const saveFile = useCallback(async () => {
     if (!openFile || !api) return
-    try { await api.writeFile(openFile.path, openFile.content); setOpenFile({ ...openFile, modified: false }); setStatus('Saved') }
-    catch { setStatus('Save failed') }
+    try {
+      await api.writeFile(openFile.path, openFile.content)
+      setOpenFile({ ...openFile, modified: false })
+      setStatus('Saved')
+    } catch { setStatus('Save failed') }
   }, [openFile, api])
 
-  const closeFile = useCallback(() => { setOpenFile(null); setShowPreview(false); onFileOpen(null) }, [onFileOpen])
+  const closeFile = useCallback(() => {
+    setOpenFile(null)
+    setShowPreview(false)
+    onFileOpen(null)
+  }, [onFileOpen])
 
   const doCreate = useCallback(async () => {
     if (!api || !selectedDir || !createName.trim()) return
     const name = createName.trim()
-    const fp = `${selectedDir}\\${name}`
-    setCreating('none'); setCreateName('')
+    const fullPath = `${selectedDir}\\${name}`
+    setCreating('none')
+    setCreateName('')
     try {
-      if (creating === 'file') { await api.createFile(fp, ''); setOpenFile({ path: fp, name, content: '', modified: false }) }
-      else { await api.createDirectory(fp) }
-      setStatus(`Created ${name}`); await refreshTree()
+      if (creating === 'file') {
+        await api.createFile(fullPath, '')
+        setOpenFile({ path: fullPath, name, content: '', modified: false })
+      } else {
+        await api.createDirectory(fullPath)
+      }
+      setStatus(`Created ${name}`)
+      await refreshTree()
     } catch (err) { setStatus(`Failed: ${err instanceof Error ? err.message : 'error'}`) }
   }, [api, selectedDir, createName, creating, refreshTree])
 
   const confirmDelete = useCallback(async () => {
     if (!api || !confirmDelPath) return
-    const p = confirmDelPath
+    const targetPath = confirmDelPath
     setConfirmDelPath(null)
-    try { await api.deleteEntry(p); if (openFile?.path === p) { setOpenFile(null); setShowPreview(false); onFileOpen(null) }; await refreshTree(); setStatus('Deleted') }
-    catch { setStatus('Failed to delete') }
+    try {
+      await api.deleteEntry(targetPath)
+      if (openFile?.path === targetPath) { setOpenFile(null); setShowPreview(false); onFileOpen(null) }
+      await refreshTree()
+      setStatus('Deleted')
+    } catch { setStatus('Failed to delete') }
   }, [api, confirmDelPath, openFile, refreshTree, onFileOpen])
 
-  const cp = openFile && PREVIEW_EXTS.some(e => openFile.name.endsWith(e))
+  const canPreview = openFile && PREVIEW_EXTS.some(ext => openFile.name.endsWith(ext))
 
   const renderNode = (node: FileNode, depth: number): JSX.Element => (
     <div key={node.path}>
       {renameTarget === node.path ? (
         <div className="explorer-node" style={{ paddingLeft: 12 + depth * 16 }}>
           <span className="explorer-icon">{node.isDirectory ? '📁' : '📄'}</span>
-          <input ref={renameRef} className="create-input" style={{ flex: 1, marginLeft: 4 }} value={renameValue}
+          <input
+            ref={renameRef}
+            className="create-input"
+            style={{ flex: 1, marginLeft: 4 }}
+            value={renameValue}
             onChange={(e) => setRenameValue(e.target.value)}
             onBlur={submitRename}
-            onKeyDown={(e) => { if (e.key === 'Enter') submitRename(); if (e.key === 'Escape') setRenameTarget(null) }}
-            autoFocus />
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') submitRename()
+              if (e.key === 'Escape') setRenameTarget(null)
+            }}
+            autoFocus
+          />
         </div>
       ) : (
-        <div className={`explorer-node ${selectedPath === node.path ? 'explorer-node-selected' : ''}`}
+        <div
+          className={`explorer-node ${selectedPath === node.path ? 'explorer-node-selected' : ''}`}
           style={{ paddingLeft: 12 + depth * 16 }}
-          onClick={() => handleClick(node)} onDoubleClick={() => handleDblClick(node)}
-          onContextMenu={(e) => handleCtx(e, node)}>
+          onClick={() => handleClick(node)}
+          onDoubleClick={() => handleDblClick(node)}
+          onContextMenu={(e) => handleCtx(e, node)}
+        >
           <span className="explorer-icon">{node.isDirectory ? (node.expanded ? '📂' : '📁') : '📄'}</span>
           <span className="explorer-name">{node.name}</span>
-          {!node.isDirectory && <span className="explorer-delete" onClick={(e) => { e.stopPropagation(); setConfirmDelPath(node.path) }}>×</span>}
+          {!node.isDirectory && (
+            <span className="explorer-delete" onClick={(e) => { e.stopPropagation(); setConfirmDelPath(node.path) }}>×</span>
+          )}
         </div>
       )}
-      {node.isDirectory && node.expanded && node.children?.map((c) => renderNode(c, depth + 1))}
+      {node.isDirectory && node.expanded && node.children?.map((child) => renderNode(child, depth + 1))}
     </div>
   )
 
@@ -281,10 +334,14 @@ export function CodingSpace({ rootDir, editingFile, onFileOpen }: CodingSpacePro
           <div className="explorer-actions">
             {creating !== 'none' ? (
               <form onSubmit={(e) => { e.preventDefault(); doCreate() }} className="create-form">
-                <input ref={inputRef} className="create-input" value={createName}
+                <input
+                  ref={inputRef}
+                  className="create-input"
+                  value={createName}
                   onChange={(e) => setCreateName(e.target.value)}
                   onBlur={() => { setCreating('none'); setCreateName('') }}
-                  placeholder={creating === 'file' ? 'filename.ext' : 'folder-name'} />
+                  placeholder={creating === 'file' ? 'filename.ext' : 'folder-name'}
+                />
               </form>
             ) : (
               <>
@@ -296,10 +353,11 @@ export function CodingSpace({ rootDir, editingFile, onFileOpen }: CodingSpacePro
         </div>
         <div className="explorer-tree">
           {tree.length === 0 && <div className="empty-state" style={{ padding: 20 }}><p>Empty directory</p></div>}
-          {tree.map((n) => renderNode(n, 0))}
+          {tree.map((node) => renderNode(node, 0))}
         </div>
         {status && <div className="explorer-status">{status}</div>}
       </div>
+
       <div className="coding-editor">
         {openFile ? (
           <>
@@ -309,7 +367,12 @@ export function CodingSpace({ rootDir, editingFile, onFileOpen }: CodingSpacePro
                 {showPreview ? (
                   <button className="btn btn-sm btn-secondary" onClick={() => setShowPreview(false)}>← Back to Code</button>
                 ) : (
-                  <button className="btn btn-sm btn-primary" onClick={() => setShowPreview(true)} disabled={!cp} title={cp ? 'Preview page' : 'Preview only for .html .svg .js files'}>
+                  <button
+                    className="btn btn-sm btn-primary"
+                    onClick={() => setShowPreview(true)}
+                    disabled={!canPreview}
+                    title={canPreview ? 'Preview page' : 'Preview only for .html .svg .js files'}
+                  >
                     Preview
                   </button>
                 )}
@@ -317,11 +380,15 @@ export function CodingSpace({ rootDir, editingFile, onFileOpen }: CodingSpacePro
                 <button className="btn btn-sm btn-secondary" onClick={closeFile}>Close</button>
               </div>
             </div>
-            {showPreview && cp ? (
+            {showPreview && canPreview ? (
               <iframe ref={iframeRef} className="coding-preview-iframe" sandbox="allow-scripts allow-same-origin" title="preview" onLoad={writePreview} />
             ) : (
-              <textarea className="explorer-editor-textarea" value={openFile.content}
-                onChange={(e) => setOpenFile({ ...openFile, content: e.target.value, modified: true })} spellCheck={false} />
+              <textarea
+                className="explorer-editor-textarea"
+                value={openFile.content}
+                onChange={(e) => setOpenFile({ ...openFile, content: e.target.value, modified: true })}
+                spellCheck={false}
+              />
             )}
           </>
         ) : (
@@ -343,12 +410,21 @@ export function CodingSpace({ rootDir, editingFile, onFileOpen }: CodingSpacePro
 
       {ctxMenu && (
         <div className="ctx-menu" style={{ left: ctxMenu.x, top: ctxMenu.y }}>
-          {!ctxMenu.isDir && <button className="ctx-item" onClick={() => ctxAction('open')} disabled>Open</button>}
           <button className="ctx-item" onClick={() => ctxAction('cut')}>Cut</button>
           <button className="ctx-item" onClick={() => ctxAction('copy')}>Copy</button>
-          <button className={`ctx-item ${!clipboard ? 'ctx-disabled' : ''}`} onClick={() => ctxAction('paste')} disabled={!clipboard}>Paste</button>
-          <button className="ctx-item" onClick={() => ctxAction('rename')}>Rename</button>
-          <button className="ctx-item" onClick={() => ctxAction('saveas')}>Save As</button>
+          <button
+            className={`ctx-item ${!clipboard || clipboard.isDir ? 'ctx-disabled' : ''}`}
+            onClick={() => ctxAction('paste')}
+            disabled={!clipboard || clipboard.isDir}
+          >
+            Paste
+          </button>
+          {!ctxMenu.isDir && (
+            <button className="ctx-item" onClick={() => ctxAction('rename')}>Rename</button>
+          )}
+          {!ctxMenu.isDir && (
+            <button className="ctx-item" onClick={() => ctxAction('saveas')}>Save As</button>
+          )}
           <div className="ctx-divider" />
           <button className="ctx-item ctx-danger" onClick={() => ctxAction('delete')}>Delete</button>
         </div>
@@ -357,10 +433,10 @@ export function CodingSpace({ rootDir, editingFile, onFileOpen }: CodingSpacePro
   )
 }
 
-function rep(nodes: FileNode[], targetPath: string, updated: FileNode): FileNode[] {
-  return nodes.map((n) => {
-    if (n.path === targetPath) return updated
-    if (n.children) return { ...n, children: rep(n.children, targetPath, updated) }
-    return n
+function replaceNode(nodes: FileNode[], targetPath: string, updated: FileNode): FileNode[] {
+  return nodes.map((node) => {
+    if (node.path === targetPath) return updated
+    if (node.children) return { ...node, children: replaceNode(node.children, targetPath, updated) }
+    return node
   })
 }

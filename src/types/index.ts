@@ -30,6 +30,8 @@ export interface Skill {
   version: string
 }
 
+export type ChatTemplate = 'zephyr' | 'chatml' | 'llama2' | 'phi3' | 'raw'
+
 export interface ModelConfig {
   id: string
   name: string
@@ -40,6 +42,7 @@ export interface ModelConfig {
   size?: number
   quantization?: string
   loaded: boolean
+  chatTemplate?: ChatTemplate
 }
 
 export interface MemorySession {
@@ -58,3 +61,18 @@ export interface ModelLoadProgress {
 }
 
 export type BackendStatus = 'unloaded' | 'loading' | 'ready' | 'error'
+
+export interface FileNode {
+  name: string
+  path: string
+  isDirectory: boolean
+  expanded?: boolean
+  children?: FileNode[]
+}
+
+export interface OpenFile {
+  path: string
+  name: string
+  content: string
+  modified: boolean
+}

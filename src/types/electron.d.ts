@@ -7,13 +7,14 @@ export interface PathInfo {
 }
 
 export interface ElectronAPI {
+  openFileDialog: (filters?: { name: string; extensions: string[] }[]) => Promise<string | null>
+  openDirectoryDialog: () => Promise<string | null>
   selectDirectory: () => Promise<string | null>
-  selectFile: (filters?: { name: string; extensions: string[] }[]) => Promise<string | null>
   readFile: (path: string) => Promise<string>
   readDirectory: (path: string) => Promise<string[]>
   writeFile: (path: string, content: string) => Promise<void>
   downloadHFModel: (repoId: string, filename: string, targetDir: string) => Promise<string>
-  onDownloadProgress: (callback: (data: { repoId: string; filename: string; pct: number }) => void) => () => void
+  onDownloadProgress?: (callback: (data: { repoId: string; filename: string; pct: number }) => void) => () => void
   createFile: (path: string, content?: string) => Promise<void>
   createDirectory: (path: string) => Promise<void>
   deleteEntry: (path: string) => Promise<void>
@@ -31,8 +32,6 @@ export interface ElectronAPI {
   sendTerminalInput: (input: string) => Promise<void>
   stopTerminal: () => Promise<void>
   onTerminalOutput: (callback: (data: string) => void) => () => void
-  openFileDialog: (filters?: { name: string; extensions: string[] }[]) => Promise<string | null>
-  openDirectoryDialog: () => Promise<string | null>
 }
 
 declare global {

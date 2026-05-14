@@ -33,6 +33,8 @@ export class SkillsManager {
         if (skill) {
           this.skills.set(skill.id, skill)
           loaded.push(skill)
+        } else {
+          console.warn(`[SkillsManager] Skipped empty skill file: ${file}`)
         }
       } catch {
         continue
@@ -48,7 +50,7 @@ export class SkillsManager {
 
     const content = await api.readFile(filePath)
     const skill = this.parseSkillFile(content, filePath)
-    if (!skill) throw new Error('Invalid skill file')
+    if (!skill) throw new Error(`Skill file has no body content: ${filePath}`)
 
     this.skills.set(skill.id, skill)
     return skill

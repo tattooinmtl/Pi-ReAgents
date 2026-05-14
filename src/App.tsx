@@ -28,6 +28,51 @@ const DEFAULT_PERSONALITY: PersonalityConfig = {
   mirostatEta: 0.1,
 }
 
+// Defined outside the component so it is never recreated on render.
+const CODE_ASSISTANT_SKILL: Skill = {
+  id: 'code-assistant',
+  name: 'Code Assistant',
+  description: 'Full-stack project scaffolder and coding assistant',
+  content: `You are an expert full-stack developer and coding assistant. Follow these rules:
+
+1. PROJECT SCAFFOLDING — When asked to start a new project, ask what type: html, node, php, react, python, or markdown. Then create the full file structure with all needed files.
+2. HTML — Always include a linked CSS file (style.css) and a JS file (script.js). Use semantic HTML5 structure.
+3. CSS — Create responsive, modern styles. Include reset/base styles. Use CSS variables for theming.
+4. NODE.JS — Check package.json dependencies. Run 'npm install' when needed. Use express for servers, proper error handling.
+5. PHP — Use modern PHP 8+ practices. Include proper error handling, PDO for databases, prepared statements.
+6. PYTHON — Check requirements.txt or pyproject.toml. Suggest 'pip install' commands for missing dependencies.
+7. MARKDOWN (.md) — Create project plans, README files, documentation with proper structure.
+8. FILE STRUCTURE — When creating a project, output the full folder tree first, then each file in code blocks.
+9. Always use markdown code blocks with language tags (html, css, js, php, py, etc.).
+10. Provide clear explanations alongside code. Follow best practices, accessibility, and security patterns.`,
+  path: '',
+  enabled: false,
+  tags: ['coding', 'fullstack', 'project-scaffolding', 'built-in'],
+  version: '2.0.0',
+}
+
+const PERSONALITY_KEYS: (keyof PersonalityConfig)[] = [
+  'temperature', 'topP', 'topK', 'repeatPenalty', 'maxTokens',
+  'systemPrompt', 'contextLength', 'mirostat', 'mirostatTau', 'mirostatEta',
+]
+
+function isValidPersonality(obj: unknown): obj is Partial<PersonalityConfig> {
+  if (!obj || typeof obj !== 'object') return false
+  const rec = obj as Record<string, unknown>
+  for (const key of PERSONALITY_KEYS) {
+    if (key in rec) {
+      const val = rec[key]
+      if (key === 'systemPrompt' && typeof val !== 'string') return false
+      if (key === 'mirostat' && typeof val !== 'boolean') return false
+      if (
+        key !== 'systemPrompt' && key !== 'mirostat' &&
+        (typeof val !== 'number' || !isFinite(val as number))
+      ) return false
+    }
+  }
+  return true
+}
+
 export default function App() {
   const [messages, setMessages] = useState<Message[]>([])
   const [isProcessing, setIsProcessing] = useState(false)
@@ -57,12 +102,28 @@ export default function App() {
   const modelManagerRef = useRef(new ModelManager())
   const fileInputRef = useRef<HTMLInputElement>(null)
 
+  // Stable refs so useCallback closures always read the latest value without
+  // adding frequently-changing state to their dep arrays.
+  const messagesRef = useRef<Message[]>([])
+  useEffect(() => { messagesRef.current = messages }, [messages])
+
   const engine = engineRef.current
   const skillsManager = skillsRef.current
   const memoryManager = memoryRef.current
   const modelManager = modelManagerRef.current
 
+  const addLog = useCallback((msg: string) => {
+    setLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`])
+  }, [])
+
   useEffect(() => {
+    // Wire the engine's internal status transitions directly into React state
+    // so the UI never drifts, regardless of which code path triggered the change.
+    engine.setStatusHandler(setBackendStatus)
+
+    let unsubLogs: (() => void) | undefined
+    let unsubDl: (() => void) | undefined
+
     const init = async () => {
       const api = window.electronAPI
       if (!api) return
@@ -72,7 +133,7 @@ export default function App() {
       const skillsDir = `${appPath}\\skills`
       const memoryDir = `${appPath}\\memory`
       let modelsDir = ''
-      try { modelsDir = await api.getModelsDir() } catch {} 
+      try { modelsDir = await api.getModelsDir() } catch {}
 
       skillsManager.setSkillsDir(skillsDir)
       memoryManager.setBaseDir(memoryDir)
@@ -88,12 +149,19 @@ export default function App() {
       try {
         const saved = await api.readFile(`${appPath}\\personality.json`)
         const parsed = JSON.parse(saved)
-        if (parsed.systemPrompt) setPersonality((prev) => ({ ...prev, ...parsed }))
-        addLog('Personality loaded from save')
+        if (isValidPersonality(parsed) && parsed.systemPrompt) {
+          setPersonality((prev) => ({ ...prev, ...parsed }))
+          addLog('Personality loaded from save')
+        }
       } catch {
         const ls = localStorage.getItem('llama-personality')
         if (ls) {
-          try { setPersonality((prev) => ({ ...prev, ...JSON.parse(ls) })) } catch {}
+          try {
+            const parsed = JSON.parse(ls)
+            if (isValidPersonality(parsed)) {
+              setPersonality((prev) => ({ ...prev, ...parsed }))
+            }
+          } catch {}
         }
       }
 
@@ -105,33 +173,29 @@ export default function App() {
       setModels(modelManager.getAllModels())
 
       engine.setProgressHandler((progress) => {
-        if (progress.stage === 'ready') setBackendStatus('ready')
         addLog(`[engine] ${progress.stage} ${progress.progress}%`)
       })
 
       const logsData = await api.getServerLogs().catch(() => '')
       if (logsData) setLogs((prev) => [...prev, ...logsData.trim().split('\n').filter(Boolean)])
 
-      const unsubLogs = api.onServerLog((data) => {
+      // Store unsub refs in the outer scope so the effect cleanup can reach them.
+      unsubLogs = api.onServerLog((data) => {
         setLogs((prev) => [...prev, ...data.trim().split('\n').filter(Boolean)])
       })
-      const unsubDl = api.onDownloadProgress?.((data) => {
+      unsubDl = api.onDownloadProgress?.((data) => {
         addLog(`Downloading ${data.filename}: ${data.pct}%`)
       })
-      return () => { unsubLogs?.(); unsubDl?.() }
     }
+
     init()
 
-    return () => { engine.stopServer() }
-  }, [])
-
-  const addLog = useCallback((msg: string) => {
-    setLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`])
-  }, [])
-
-  useEffect(() => {
-    setBackendStatus(engine.getStatus())
-  }, [activeModel])
+    return () => {
+      unsubLogs?.()
+      unsubDl?.()
+      engine.stopServer()
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSend = useCallback(async (content: string) => {
     const userMsg: Message = {
@@ -142,32 +206,38 @@ export default function App() {
       model: activeModel?.name,
     }
 
+    // Build the system prompt string (personality + active skills + file context).
+    const enabledSkills = skillsManager.getEnabledSkills()
+    const skillContext = enabledSkills.length > 0
+      ? `\n\nActive Skills:\n${skillsManager.getCombinedSystemPrompt()}`
+      : ''
+    const fileContext = openEditingFile
+      ? `\n\nCurrently editing: ${openEditingFile.name}\nFile path: ${openEditingFile.path}`
+      : ''
+    const systemPrompt = `${personality.systemPrompt}${skillContext}${fileContext}`
+
+    // Use the ref so we always have the current history without making
+    // handleSend depend on the frequently-updated messages state.
+    const historyForPrompt: Message[] = [...messagesRef.current, userMsg]
+
     setMessages((prev) => [...prev, userMsg])
     setIsProcessing(true)
 
-    try {
-      const enabledSkills = skillsManager.getEnabledSkills()
-      const skillContext = enabledSkills.length > 0
-        ? `\n\nActive Skills:\n${skillsManager.getCombinedSystemPrompt()}`
-        : ''
+    const assistantMsg: Message = {
+      id: `msg-${Date.now() + 1}`,
+      role: 'assistant',
+      content: '',
+      timestamp: Date.now(),
+      model: activeModel?.name,
+    }
+    setMessages((prev) => [...prev, assistantMsg])
 
-      const fileContext = openEditingFile
-        ? `\n\nCurrently editing: ${openEditingFile.name}\nFile path: ${openEditingFile.path}`
-        : ''
-      const fullPrompt = `${personality.systemPrompt}${skillContext}${fileContext}\n\nUser: ${content}`
+    try {
       let fullResponse = ''
 
-      const assistantMsg: Message = {
-        id: `msg-${Date.now() + 1}`,
-        role: 'assistant',
-        content: '',
-        timestamp: Date.now(),
-        model: activeModel?.name,
-      }
-      setMessages((prev) => [...prev, assistantMsg])
-
       const response = await engine.generate(
-        fullPrompt,
+        historyForPrompt,
+        systemPrompt,
         personality,
         (token) => {
           fullResponse += token
@@ -182,16 +252,10 @@ export default function App() {
         }
       )
 
-      const finalMsg: Message = {
-        id: `msg-${Date.now() + 1}`,
-        role: 'assistant',
-        content: response,
-        timestamp: Date.now(),
-        model: activeModel?.name,
-      }
-
+      // Save using the same ID that is displayed in the UI.
+      const finalAssistantMsg: Message = { ...assistantMsg, content: response }
       await memoryManager.saveMessage(userMsg)
-      await memoryManager.saveMessage(finalMsg)
+      await memoryManager.saveMessage(finalAssistantMsg)
       const updated = await memoryManager.listSessions()
       setSessions(updated)
     } catch (err) {
@@ -239,28 +303,6 @@ export default function App() {
       console.error('Failed to load skill:', err)
     }
   }, [skillsManager])
-
-  const CODE_ASSISTANT_SKILL: Skill = {
-    id: 'code-assistant',
-    name: 'Code Assistant',
-    description: 'Full-stack project scaffolder and coding assistant',
-    content: `You are an expert full-stack developer and coding assistant. Follow these rules:
-
-1. PROJECT SCAFFOLDING — When asked to start a new project, ask what type: html, node, php, react, python, or markdown. Then create the full file structure with all needed files.
-2. HTML — Always include a linked CSS file (style.css) and a JS file (script.js). Use semantic HTML5 structure.
-3. CSS — Create responsive, modern styles. Include reset/base styles. Use CSS variables for theming.
-4. NODE.JS — Check package.json dependencies. Run 'npm install' when needed. Use express for servers, proper error handling.
-5. PHP — Use modern PHP 8+ practices. Include proper error handling, PDO for databases, prepared statements.
-6. PYTHON — Check requirements.txt or pyproject.toml. Suggest 'pip install' commands for missing dependencies.
-7. MARKDOWN (.md) — Create project plans, README files, documentation with proper structure.
-8. FILE STRUCTURE — When creating a project, output the full folder tree first, then each file in code blocks.
-9. Always use markdown code blocks with language tags (html, css, js, php, py, etc.).
-10. Provide clear explanations alongside code. Follow best practices, accessibility, and security patterns.`,
-    path: '',
-    enabled: false,
-    tags: ['coding', 'fullstack', 'project-scaffolding', 'built-in'],
-    version: '2.0.0',
-  }
 
   const handleOpenFiles = useCallback(async () => {
     const api = window.electronAPI
@@ -326,7 +368,7 @@ export default function App() {
     } else {
       setCodingSpace(true)
     }
-  }, [codeAssistant, skillsManager])
+  }, [codeAssistant, skillsManager, addLog])
 
   const handleToggleSkill = useCallback((id: string) => {
     skillsManager.toggleSkill(id)
@@ -338,36 +380,7 @@ export default function App() {
     setSkills(skillsManager.getAllSkills())
   }, [skillsManager])
 
-  const handleLoadModel = useCallback(async () => {
-    const api = window.electronAPI
-    if (api) {
-      const filePath = await api.openFileDialog([{ name: 'GGUF Model', extensions: ['gguf', 'ggml'] }])
-      if (!filePath) return
-      await registerModel(filePath)
-    } else {
-      fileInputRef.current?.click()
-    }
-  }, [modelManager, engine])
-
-  const handleRestartServer = useCallback(async () => {
-    const active = modelManager.getActiveModel()
-    if (!active) {
-      addLog('No model selected — pick one first')
-      return
-    }
-    addLog(`Restarting server with: ${active.name}`)
-    setBackendStatus('loading')
-    try {
-      await engine.startServer(active.path)
-      setBackendStatus('ready')
-      addLog('Server ready')
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Restart failed'
-      addLog(`Error: ${msg}`)
-    }
-  }, [modelManager, engine])
-
-  const registerModel = async (filePath: string) => {
+  const registerModel = useCallback(async (filePath: string) => {
     addLog(`Selected model: ${filePath}`)
     try {
       const config = await modelManager.addLocalModel(filePath)
@@ -379,7 +392,34 @@ export default function App() {
       const msg = err instanceof Error ? err.message : 'Failed to register model'
       addLog(`Error: ${msg}`)
     }
-  }
+  }, [addLog, modelManager])
+
+  const handleLoadModel = useCallback(async () => {
+    const api = window.electronAPI
+    if (api) {
+      const filePath = await api.openFileDialog([{ name: 'GGUF Model', extensions: ['gguf', 'ggml'] }])
+      if (!filePath) return
+      await registerModel(filePath)
+    } else {
+      fileInputRef.current?.click()
+    }
+  }, [registerModel])
+
+  const handleRestartServer = useCallback(async () => {
+    const active = modelManager.getActiveModel()
+    if (!active) {
+      addLog('No model selected — pick one first')
+      return
+    }
+    addLog(`Restarting server with: ${active.name}`)
+    try {
+      await engine.startServer(active.path, active.chatTemplate)
+      addLog('Server ready')
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Restart failed'
+      addLog(`Error: ${msg}`)
+    }
+  }, [modelManager, engine, addLog])
 
   const handleSavePersonality = useCallback(async () => {
     const api = window.electronAPI
@@ -395,7 +435,7 @@ export default function App() {
     } catch {
       addLog('Failed to save personality')
     }
-  }, [personality])
+  }, [personality, addLog])
 
   const handleClearLogs = useCallback(() => {
     setLogs([])
@@ -430,7 +470,7 @@ export default function App() {
     } catch (err) {
       addLog(`Failed: ${err instanceof Error ? err.message : 'error'}`)
     }
-  }, [codingSpace, explorerRoot])
+  }, [codingSpace, explorerRoot, addLog])
 
   const handleApplyCode = useCallback(async (code: string, _lang: string) => {
     if (!openEditingFile) {
@@ -448,7 +488,7 @@ export default function App() {
     } catch (err) {
       addLog(`Failed to write: ${err instanceof Error ? err.message : 'error'}`)
     }
-  }, [openEditingFile])
+  }, [openEditingFile, addLog])
 
   const handleFileInputChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -456,27 +496,23 @@ export default function App() {
     const path = (file as any).path || file.name
     await registerModel(path)
     e.target.value = ''
-  }, [modelManager, engine])
+  }, [registerModel])
 
   const handleSelectModel = useCallback(async (id: string) => {
     const config = modelManager.setActiveModel(id)
     if (!config) return
 
     setActiveModel(config)
-    setBackendStatus('loading')
 
     try {
-      await engine.startServer(config.path)
-      setBackendStatus('ready')
+      await engine.startServer(config.path, config.chatTemplate)
       setShowModels(false)
     } catch (err) {
       console.error('Failed to start server:', err)
-      setBackendStatus('error')
     }
   }, [modelManager, engine])
 
   const handleDownloadHF = useCallback(async (repoId: string, filename: string) => {
-    setBackendStatus('loading')
     addLog(`Downloading ${filename} from ${repoId}...`)
     try {
       const config = await modelManager.downloadHuggingFaceModel(repoId, filename)
@@ -486,9 +522,8 @@ export default function App() {
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Download failed'
       addLog(`Download error: ${msg}`)
-      setBackendStatus('error')
     }
-  }, [modelManager, handleSelectModel])
+  }, [modelManager, handleSelectModel, addLog])
 
   const handleRemoveModel = useCallback((id: string) => {
     const wasActive = activeModel?.id === id
@@ -497,7 +532,6 @@ export default function App() {
     if (wasActive) {
       setActiveModel(undefined)
       engine.stopServer()
-      setBackendStatus('unloaded')
     }
   }, [modelManager, activeModel, engine])
 
@@ -517,9 +551,10 @@ export default function App() {
     setSessions(updated)
   }, [memoryManager])
 
-  const handleNewSession = useCallback(async () => {
+  const handleNewSession = useCallback(() => {
     setMessages([])
-  }, [])
+    memoryManager.resetSession()
+  }, [memoryManager])
 
   return (
     <div className="app">
@@ -596,7 +631,6 @@ export default function App() {
 
       {showModels && (
         <ModelManagerUI
-          modelManager={modelManager}
           models={models}
           activeModel={activeModel}
           onSelectModel={handleSelectModel}

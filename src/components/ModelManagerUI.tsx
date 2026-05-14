@@ -1,9 +1,7 @@
 import { useState } from 'react'
 import type { ModelConfig } from '../types'
-import { ModelManager } from '../models/ModelManager'
 
 interface ModelManagerUIProps {
-  modelManager: ModelManager
   models: ModelConfig[]
   activeModel: ModelConfig | undefined
   onSelectModel: (id: string) => void
@@ -22,7 +20,6 @@ const SUGGESTED_MODELS = [
 ]
 
 export function ModelManagerUI({
-  modelManager,
   models,
   activeModel,
   onSelectModel,
@@ -39,10 +36,6 @@ export function ModelManagerUI({
     onDownloadHF(hfRepo.trim(), hfFile.trim())
     setHfRepo('')
     setHfFile('')
-  }
-
-  const handleSuggestedDownload = (repo: string, file: string) => {
-    onDownloadHF(repo, file)
   }
 
   return (
@@ -65,6 +58,7 @@ export function ModelManagerUI({
                 <div className="model-info">
                   <span className="model-name">{model.name}</span>
                   {model.quantization && <span className="model-quant">{model.quantization}</span>}
+                  {model.chatTemplate && <span className="model-quant">{model.chatTemplate}</span>}
                 </div>
                 <div className="model-actions">
                   <button
@@ -123,7 +117,7 @@ export function ModelManagerUI({
                     </div>
                     <button
                       className="btn btn-sm btn-secondary"
-                      onClick={() => handleSuggestedDownload(m.repo, m.file)}
+                      onClick={() => onDownloadHF(m.repo, m.file)}
                     >
                       Download
                     </button>

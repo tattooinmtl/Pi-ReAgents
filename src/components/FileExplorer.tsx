@@ -1,20 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { DraggableWindow } from './DraggableWindow'
-
-interface FileNode {
-  name: string
-  path: string
-  isDirectory: boolean
-  expanded?: boolean
-  children?: FileNode[]
-}
-
-interface OpenFile {
-  path: string
-  name: string
-  content: string
-  modified: boolean
-}
+import type { FileNode, OpenFile } from '../types'
 
 interface FileExplorerProps {
   rootDir: string
@@ -38,7 +24,6 @@ export function FileExplorer({ rootDir, onClose, onFileOpen, floating }: FileExp
   const [showPreview, setShowPreview] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const iframeRef = useRef<HTMLIFrameElement>(null)
-  const dblClickRef = useRef(false)
 
   const api = window.electronAPI
 
@@ -58,7 +43,7 @@ export function FileExplorer({ rootDir, onClose, onFileOpen, floating }: FileExp
             expanded: false,
             children: [],
           })
-        } catch { /* skip */ }
+        } catch { /* skip inaccessible entries */ }
       }
       nodes.sort((a, b) => {
         if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1
@@ -119,22 +104,18 @@ export function FileExplorer({ rootDir, onClose, onFileOpen, floating }: FileExp
     }
   }, [api, openFile, onFileOpen])
 
+  // Single-click: select (highlight). Double-click: open.
+  // The broken dblClickRef/setTimeout pattern is removed entirely.
   const handleNodeClick = useCallback((node: FileNode) => {
     if (node.isDirectory) {
       toggleDir(node)
     } else {
       setSelectedPath(node.path)
-      dblClickRef.current = false
-      setTimeout(() => {
-        if (!dblClickRef.current) return
-        openFileContent(node)
-      }, 200)
     }
-  }, [toggleDir, openFileContent])
+  }, [toggleDir])
 
   const handleNodeDoubleClick = useCallback((node: FileNode) => {
     if (node.isDirectory) return
-    dblClickRef.current = true
     openFileContent(node)
   }, [openFileContent])
 

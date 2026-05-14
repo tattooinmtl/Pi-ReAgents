@@ -1,4 +1,4 @@
-import type { ModelConfig, ModelLoadProgress } from '../types'
+import type { ModelConfig, ModelLoadProgress, ChatTemplate } from '../types'
 
 export class ModelManager {
   private models: Map<string, ModelConfig> = new Map()
@@ -93,42 +93,11 @@ export class ModelManager {
       return this.addLocalModel(targetPath)
     }
 
-    const url = `https://huggingface.co/${repoId}/resolve/main/${filename}`
-    const targetPath = `${dir}\\${filename}`
-
-    this.reportProgress('downloading', 10, 100)
-
-    const response = await fetch(url)
-    if (!response.ok) throw new Error(`Failed to download: ${response.statusText}`)
-
-    const reader = response.body!.getReader()
-    const contentLength = Number(response.headers.get('content-length') || '0')
-    const blobParts: BlobPart[] = []
-    let receivedLength = 0
-
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      blobParts.push(value)
-      receivedLength += value.length
-      if (contentLength) {
-        const progress = Math.round((receivedLength / contentLength) * 80) + 10
-        this.reportProgress('downloading', progress, 100)
-      }
-    }
-
-    this.reportProgress('saving', 90, 100)
-
-    const blob = new Blob(blobParts)
-    const urlObj = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = urlObj
-    a.download = filename
-    a.click()
-    URL.revokeObjectURL(urlObj)
-
-    this.reportProgress('ready', 100, 100)
-    return this.addLocalModel(targetPath)
+    // Without Electron we cannot write to disk — just tell the user.
+    throw new Error(
+      'Downloading HuggingFace models requires the Electron desktop app. ' +
+      'Please use the desktop version, or download the file manually and use "Load Model".'
+    )
   }
 
   setActiveModel(modelId: string): ModelConfig | undefined {
@@ -163,7 +132,10 @@ export class ModelManager {
   }
 
   private createLocalConfig(fileName: string, fullPath: string): ModelConfig {
-    const id = `local-${fileName.toLowerCase().replace(/[^a-z0-9]/g, '-')}`
+    // Include a suffix derived from the full path so two files with the same
+    // filename in different directories never collide on the same ID.
+    const pathKey = fullPath.toLowerCase().replace(/[^a-z0-9]/g, '').slice(-8)
+    const id = `local-${fileName.toLowerCase().replace(/[^a-z0-9]/g, '-')}-${pathKey}`
     const quantMatch = fileName.match(/-(q\d+_\d|q\d+_k_[\w]|q\d+_[\w]+)/i)
     return {
       id,
@@ -172,7 +144,17 @@ export class ModelManager {
       source: 'local',
       quantization: quantMatch?.[1],
       loaded: false,
+      chatTemplate: this.detectTemplate(fileName),
     }
+  }
+
+  private detectTemplate(fileName: string): ChatTemplate {
+    const lower = fileName.toLowerCase()
+    if (lower.includes('phi')) return 'phi3'
+    if (lower.includes('llama-2') || lower.includes('llama2')) return 'llama2'
+    if (lower.includes('qwen') || lower.includes('hermes') || lower.includes('chatml')) return 'chatml'
+    // Mistral, Mixtral, Zephyr, CodeLlama, and most others use the zephyr/instruct template
+    return 'zephyr'
   }
 
   private reportProgress(stage: string, progress: number, total: number) {

@@ -8,3 +8,4 @@ workspace/
 *.log
 .env
 .DS_Store
+plan.md

@@ -513,6 +513,9 @@ export default function App() {
   }, [modelManager, engine])
 
   const handleDownloadHF = useCallback(async (repoId: string, filename: string) => {
+    // Show loading during the download itself — the engine's status handler takes
+    // over once startServer is called inside handleSelectModel.
+    setBackendStatus('loading')
     addLog(`Downloading ${filename} from ${repoId}...`)
     try {
       const config = await modelManager.downloadHuggingFaceModel(repoId, filename)
@@ -522,6 +525,7 @@ export default function App() {
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Download failed'
       addLog(`Download error: ${msg}`)
+      setBackendStatus('error')
     }
   }, [modelManager, handleSelectModel, addLog])
 

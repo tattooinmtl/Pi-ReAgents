@@ -14,7 +14,7 @@ export interface ElectronAPI {
   readDirectory: (path: string) => Promise<string[]>
   writeFile: (path: string, content: string) => Promise<void>
   downloadHFModel: (repoId: string, filename: string, targetDir: string) => Promise<string>
-  onDownloadProgress?: (callback: (data: { repoId: string; filename: string; pct: number }) => void) => () => void
+  onDownloadProgress?: (callback: (data: { repoId: string; filename: string; pct: number; received: number; total: number }) => void) => () => void
   createFile: (path: string, content?: string) => Promise<void>
   createDirectory: (path: string) => Promise<void>
   deleteEntry: (path: string) => Promise<void>
@@ -32,6 +32,9 @@ export interface ElectronAPI {
   sendTerminalInput: (input: string) => Promise<void>
   stopTerminal: () => Promise<void>
   onTerminalOutput: (callback: (data: string) => void) => () => void
+  quitApp?: () => Promise<void>
+  onMenuAction?: (callback: (action: string) => void) => () => void
+  sendAppState?: (state: Record<string, boolean>) => void
 }
 
 declare global {

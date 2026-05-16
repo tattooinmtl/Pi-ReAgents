@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Chat } from './components/Chat'
+import { DownloadProgressFloat } from './components/DownloadProgressFloat'
 import { PersonalityConfigPanel } from './components/PersonalityConfig'
 import { SkillsEditor } from './components/SkillsEditor'
 import { ModelManagerUI } from './components/ModelManagerUI'
@@ -9,11 +10,16 @@ import { Console } from './components/Console'
 import { FileExplorer } from './components/FileExplorer'
 import { CodingSpace } from './components/CodingSpace'
 import { Terminal } from './components/Terminal'
+import { ProvidersPanel } from './components/ProvidersPanel'
+import { AgentsPanel } from './components/AgentsPanel'
+import { AgentOrchestrator } from './agents/AgentOrchestrator'
 import { NeuralEngine } from './engine/NeuralEngine'
 import { SkillsManager } from './skills/SkillsManager'
 import { MemoryManager } from './memory/MemoryManager'
 import { ModelManager } from './models/ModelManager'
-import type { Message, PersonalityConfig, Skill, ModelConfig, MemorySession, BackendStatus } from './types'
+import type { Message, PersonalityConfig, Skill, ModelConfig, MemorySession, BackendStatus, ProviderConfig, AgentDefinition, OrchestrationSession, GenerationStats } from './types'
+
+const LOCAL_PROVIDER: ProviderConfig = { id: 'local', name: 'Local (llama.cpp)', type: 'local' }
 
 const DEFAULT_PERSONALITY: PersonalityConfig = {
   temperature: 0.7,
@@ -93,19 +99,42 @@ export default function App() {
   const [showExplorer, setShowExplorer] = useState(false)
   const [showConsole, setShowConsole] = useState(false)
   const [showTerminal, setShowTerminal] = useState(false)
+  const [showProviders, setShowProviders] = useState(false)
+  const [showAgents, setShowAgents] = useState(false)
+  const [agents, setAgents] = useState<AgentDefinition[]>([])
+  const [activeOrchestration, setActiveOrchestration] = useState<OrchestrationSession | null>(null)
+  const [isOrchestrating, setIsOrchestrating] = useState(false)
   const [explorerRoot, setExplorerRoot] = useState('')
   const [openEditingFile, setOpenEditingFile] = useState<{ path: string; name: string } | null>(null)
+  const [providers, setProviders] = useState<ProviderConfig[]>([LOCAL_PROVIDER])
+  const [activeProvider, setActiveProvider] = useState<ProviderConfig>(LOCAL_PROVIDER)
+  // Context notes injected via /btw — appended to system prompt on every send
+  const [btwContext, setBtwContext] = useState('')
+  const [downloadState, setDownloadState] = useState<{
+    filename: string; pct: number; received: number; total: number; bytesPerSec: number
+  } | null>(null)
+  const [generationStats, setGenerationStats] = useState<GenerationStats | null>(null)
+  const dlRateRef = useRef<{ received: number; time: number } | null>(null)
+  const dlClearRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const engineRef = useRef(new NeuralEngine())
   const skillsRef = useRef(new SkillsManager())
   const memoryRef = useRef(new MemoryManager())
   const modelManagerRef = useRef(new ModelManager())
+  const orchestratorRef = useRef<AgentOrchestrator | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
-
+  // Always holds the latest menu-action handler so the IPC listener (set up
+  // once at mount) never captures stale state via closure.
   // Stable refs so useCallback closures always read the latest value without
   // adding frequently-changing state to their dep arrays.
   const messagesRef = useRef<Message[]>([])
   useEffect(() => { messagesRef.current = messages }, [messages])
+
+  // Keep agent runners in sync when the user changes personality settings.
+  useEffect(() => {
+    orchestratorRef.current?.updateBasePersonality(personality)
+  }, [personality])
+
 
   const engine = engineRef.current
   const skillsManager = skillsRef.current
@@ -176,6 +205,15 @@ export default function App() {
         addLog(`[engine] ${progress.stage} ${progress.progress}%`)
       })
 
+      // Initialize the agent orchestrator with the current personality snapshot.
+      // A separate useEffect keeps it in sync when personality changes.
+      orchestratorRef.current = new AgentOrchestrator(
+        engine,
+        personality,
+        (session) => setActiveOrchestration({ ...session })
+      )
+      setAgents(orchestratorRef.current.getAgents())
+
       const logsData = await api.getServerLogs().catch(() => '')
       if (logsData) setLogs((prev) => [...prev, ...logsData.trim().split('\n').filter(Boolean)])
 
@@ -184,7 +222,35 @@ export default function App() {
         setLogs((prev) => [...prev, ...data.trim().split('\n').filter(Boolean)])
       })
       unsubDl = api.onDownloadProgress?.((data) => {
-        addLog(`Downloading ${data.filename}: ${data.pct}%`)
+        const now = Date.now()
+        let bytesPerSec = 0
+        if (dlRateRef.current && data.received > dlRateRef.current.received) {
+          const dt = (now - dlRateRef.current.time) / 1000
+          if (dt > 0) bytesPerSec = (data.received - dlRateRef.current.received) / dt
+        }
+        dlRateRef.current = { received: data.received, time: now }
+
+        if (dlClearRef.current) clearTimeout(dlClearRef.current)
+
+        setDownloadState({
+          filename: data.filename,
+          pct: data.pct,
+          received: data.received,
+          total: data.total,
+          bytesPerSec,
+        })
+
+        // Log only at 0%, every 10%, and 100%
+        if (data.pct === 0 || data.pct % 10 === 0 || data.pct === 100) {
+          addLog(`Downloading ${data.filename}: ${data.pct}%`)
+        }
+
+        if (data.pct >= 100) {
+          dlClearRef.current = setTimeout(() => {
+            setDownloadState(null)
+            dlRateRef.current = null
+          }, 2500)
+        }
       })
     }
 
@@ -206,7 +272,7 @@ export default function App() {
       model: activeModel?.name,
     }
 
-    // Build the system prompt string (personality + active skills + file context).
+    // Build the system prompt string (personality + active skills + file context + btw notes).
     const enabledSkills = skillsManager.getEnabledSkills()
     const skillContext = enabledSkills.length > 0
       ? `\n\nActive Skills:\n${skillsManager.getCombinedSystemPrompt()}`
@@ -214,7 +280,8 @@ export default function App() {
     const fileContext = openEditingFile
       ? `\n\nCurrently editing: ${openEditingFile.name}\nFile path: ${openEditingFile.path}`
       : ''
-    const systemPrompt = `${personality.systemPrompt}${skillContext}${fileContext}`
+    const btwBlock = btwContext ? `\n\nContext notes:\n${btwContext}` : ''
+    const systemPrompt = `${personality.systemPrompt}${skillContext}${fileContext}${btwBlock}`
 
     // Use the ref so we always have the current history without making
     // handleSend depend on the frequently-updated messages state.
@@ -222,6 +289,7 @@ export default function App() {
 
     setMessages((prev) => [...prev, userMsg])
     setIsProcessing(true)
+    setGenerationStats(null)
 
     const assistantMsg: Message = {
       id: `msg-${Date.now() + 1}`,
@@ -249,7 +317,8 @@ export default function App() {
             }
             return updated
           })
-        }
+        },
+        (stats) => setGenerationStats(stats)
       )
 
       // Save using the same ID that is displayed in the UI.
@@ -269,7 +338,7 @@ export default function App() {
     } finally {
       setIsProcessing(false)
     }
-  }, [personality, activeModel, skillsManager, memoryManager, engine, openEditingFile])
+  }, [personality, activeModel, skillsManager, memoryManager, engine, openEditingFile, btwContext])
 
   const handleStop = useCallback(() => {
     engine.stopGeneration()
@@ -381,18 +450,19 @@ export default function App() {
   }, [skillsManager])
 
   const registerModel = useCallback(async (filePath: string) => {
-    addLog(`Selected model: ${filePath}`)
+    addLog(`Loading model: ${filePath}`)
     try {
       const config = await modelManager.addLocalModel(filePath)
       setModels(modelManager.getAllModels())
       setActiveModel(config)
       modelManager.setActiveModel(config.id)
-      addLog('Model registered. Click "Restart Server" to start.')
+      await engine.startServer(config.path, config.chatTemplate)
+      addLog('Server ready')
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to register model'
+      const msg = err instanceof Error ? err.message : 'Failed to load model'
       addLog(`Error: ${msg}`)
     }
-  }, [addLog, modelManager])
+  }, [addLog, modelManager, engine])
 
   const handleLoadModel = useCallback(async () => {
     const api = window.electronAPI
@@ -508,9 +578,10 @@ export default function App() {
       await engine.startServer(config.path, config.chatTemplate)
       setShowModels(false)
     } catch (err) {
-      console.error('Failed to start server:', err)
+      const msg = err instanceof Error ? err.message : 'Failed to start server'
+      addLog(`Error: ${msg}`)
     }
-  }, [modelManager, engine])
+  }, [modelManager, engine, addLog])
 
   const handleDownloadHF = useCallback(async (repoId: string, filename: string) => {
     // Show loading during the download itself — the engine's status handler takes
@@ -560,8 +631,246 @@ export default function App() {
     memoryManager.resetSession()
   }, [memoryManager])
 
+  // ── Agent orchestration handlers ──────────────────────────────────────────
+
+  const handleToggleAgent = useCallback((id: string) => {
+    const orch = orchestratorRef.current
+    if (!orch) return
+    const agent = orch.getAgents().find((a) => a.id === id)
+    if (!agent) return
+    orch.updateAgent({ ...agent, enabled: !agent.enabled })
+    setAgents(orch.getAgents())
+  }, [])
+
+  const handleUpdateAgent = useCallback((def: AgentDefinition) => {
+    orchestratorRef.current?.updateAgent(def)
+    setAgents(orchestratorRef.current?.getAgents() ?? [])
+  }, [])
+
+  const handleAddAgent = useCallback((def: AgentDefinition) => {
+    orchestratorRef.current?.registerAgent(def)
+    setAgents(orchestratorRef.current?.getAgents() ?? [])
+  }, [])
+
+  const handleRemoveAgent = useCallback((id: string) => {
+    orchestratorRef.current?.removeAgent(id)
+    setAgents(orchestratorRef.current?.getAgents() ?? [])
+  }, [])
+
+  const handleStopOrchestration = useCallback(() => {
+    orchestratorRef.current?.abort()
+    setIsOrchestrating(false)
+  }, [])
+
+  const handleRunAgents = useCallback(async (userMessage: string) => {
+    const orch = orchestratorRef.current
+    if (!orch || isOrchestrating) return
+
+    setIsOrchestrating(true)
+    setShowAgents(true)
+
+    const userMsg: Message = {
+      id: `msg-${Date.now()}`,
+      role: 'user',
+      content: userMessage,
+      timestamp: Date.now(),
+      model: activeModel?.name,
+    }
+    setMessages((prev) => [...prev, userMsg])
+
+    try {
+      const session = await orch.run(userMessage)
+
+      if (session.synthesisOutput) {
+        const assistantMsg: Message = {
+          id: `msg-${Date.now() + 1}`,
+          role: 'assistant',
+          content: session.synthesisOutput,
+          timestamp: Date.now(),
+          model: activeModel?.name,
+        }
+        setMessages((prev) => [...prev, assistantMsg])
+        await memoryManager.saveMessage(userMsg)
+        await memoryManager.saveMessage(assistantMsg)
+        const updated = await memoryManager.listSessions()
+        setSessions(updated)
+      }
+    } catch (err) {
+      const errorMsg: Message = {
+        id: `msg-${Date.now() + 2}`,
+        role: 'system',
+        content: `Agent orchestration failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
+        timestamp: Date.now(),
+      }
+      setMessages((prev) => [...prev, errorMsg])
+    } finally {
+      setIsOrchestrating(false)
+    }
+  }, [isOrchestrating, activeModel, memoryManager])
+
+  const handleSelectProvider = useCallback((provider: ProviderConfig) => {
+    setActiveProvider(provider)
+    engine.setProvider(provider)
+    addLog(`Provider switched to: ${provider.name}`)
+    setShowProviders(false)
+  }, [engine, addLog])
+
+  const handleAddProvider = useCallback((provider: ProviderConfig) => {
+    setProviders((prev) => [...prev, provider])
+    handleSelectProvider(provider)
+  }, [handleSelectProvider])
+
+  const handleRemoveProvider = useCallback((id: string) => {
+    setProviders((prev) => prev.filter((p) => p.id !== id))
+    if (activeProvider.id === id) {
+      setActiveProvider(LOCAL_PROVIDER)
+      engine.setProvider(LOCAL_PROVIDER)
+    }
+  }, [activeProvider, engine])
+
+  const addSystemMsg = useCallback((content: string) => {
+    const msg: Message = {
+      id: `msg-${Date.now()}`,
+      role: 'system',
+      content,
+      timestamp: Date.now(),
+    }
+    setMessages((prev) => [...prev, msg])
+  }, [])
+
+  const HELP_TEXT = `Available commands:
+/help — Show this help
+/providers — Manage AI providers (local, OpenAI, Ollama, custom)
+/btw <note> — Add a private context note (injected into system prompt)
+/clear — Clear current chat
+/new — Start a new session
+/models — Open model manager
+/skills — Open skills manager
+/code — Toggle code assistant mode
+/system <prompt> — Change system prompt
+/temp <0.1–2.0> — Set temperature
+/tokens <number> — Set max tokens
+/save — Save current session
+/export — Export chat as text file`
+
+  const handleCommand = useCallback(async (cmd: string, args: string) => {
+    switch (cmd) {
+      case 'help':
+        addSystemMsg(HELP_TEXT)
+        break
+
+      case 'providers':
+        setShowProviders(true)
+        break
+
+      case 'btw':
+        if (!args) { addSystemMsg('Usage: /btw <your note>'); break }
+        setBtwContext((prev) => prev ? `${prev}\n- ${args}` : `- ${args}`)
+        setMessages((prev) => [
+          ...prev,
+          { id: `msg-${Date.now()}`, role: 'system', content: `[BTW] ${args}`, timestamp: Date.now() },
+        ])
+        break
+
+      case 'clear':
+        setMessages([])
+        setBtwContext('')
+        break
+
+      case 'new':
+        setMessages([])
+        setBtwContext('')
+        memoryManager.resetSession()
+        addLog('New session started')
+        break
+
+      case 'models':
+        setShowModels(true)
+        break
+
+      case 'skills':
+        setShowSkills(true)
+        break
+
+      case 'code':
+        handleToggleCodeAssistant()
+        break
+
+      case 'system':
+        if (!args) { addSystemMsg('Usage: /system <new prompt>'); break }
+        setPersonality((prev) => ({ ...prev, systemPrompt: args }))
+        addSystemMsg(`System prompt updated.`)
+        addLog('System prompt changed via /system command')
+        break
+
+      case 'temp': {
+        const val = parseFloat(args)
+        if (isNaN(val) || val < 0.01 || val > 5) {
+          addSystemMsg('Usage: /temp <0.1–2.0>  (e.g. /temp 0.8)')
+          break
+        }
+        setPersonality((prev) => ({ ...prev, temperature: val }))
+        addSystemMsg(`Temperature set to ${val}`)
+        break
+      }
+
+      case 'tokens': {
+        const val = parseInt(args, 10)
+        if (isNaN(val) || val < 1) {
+          addSystemMsg('Usage: /tokens <number>  (e.g. /tokens 1024)')
+          break
+        }
+        setPersonality((prev) => ({ ...prev, maxTokens: val }))
+        addSystemMsg(`Max tokens set to ${val}`)
+        break
+      }
+
+      case 'save': {
+        const currentMsgs = messagesRef.current.filter((m) => m.role !== 'system')
+        if (currentMsgs.length === 0) { addSystemMsg('Nothing to save yet.'); break }
+        try {
+          for (const m of currentMsgs) await memoryManager.saveMessage(m)
+          const updated = await memoryManager.listSessions()
+          setSessions(updated)
+          addSystemMsg('Session saved.')
+        } catch {
+          addSystemMsg('Save failed.')
+        }
+        break
+      }
+
+      case 'agents':
+        setShowAgents(true)
+        break
+
+      case 'export': {
+        const lines = messagesRef.current
+          .filter((m) => !m.content.startsWith('[BTW]'))
+          .map((m) => {
+            const label = m.role === 'user' ? 'You' : m.role === 'assistant' ? 'AI' : 'System'
+            return `[${label}]\n${m.content}`
+          })
+          .join('\n\n---\n\n')
+        const blob = new Blob([lines], { type: 'text/plain' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `chat-${new Date().toISOString().slice(0, 10)}.txt`
+        a.click()
+        URL.revokeObjectURL(url)
+        addSystemMsg('Chat exported.')
+        break
+      }
+
+      default:
+        addSystemMsg(`Unknown command: /${cmd}\nType /help to see all commands.`)
+    }
+  }, [addSystemMsg, addLog, memoryManager, handleToggleCodeAssistant, messagesRef]) // eslint-disable-line react-hooks/exhaustive-deps
+
+
   return (
     <div className="app">
+      <DownloadProgressFloat download={downloadState} />
       {showConsole && (
         <Console logs={logs} onClear={handleClearLogs} onClose={() => setShowConsole(false)} />
       )}
@@ -572,12 +881,15 @@ export default function App() {
         <div className={codingSpace ? 'chat-panel' : 'chat-panel-full'}>
           <Chat
             messages={messages}
-            isProcessing={isProcessing}
+            isProcessing={isProcessing || isOrchestrating}
             enabledSkills={skillsManager.getEnabledSkills()}
             onSend={handleSend}
-            onStop={handleStop}
+            onCommand={handleCommand}
+            onRunAgents={handleRunAgents}
+            onStop={isOrchestrating ? handleStopOrchestration : handleStop}
             onApplyCode={handleApplyCode}
             onOpenInCodingSpace={handleOpenInCodingSpace}
+            generationStats={generationStats}
           />
         </div>
         {codingSpace && explorerRoot && (
@@ -588,27 +900,6 @@ export default function App() {
           />
         )}
       </div>
-
-      <BottomPanel
-        status={backendStatus}
-        activeModelName={activeModel?.name}
-        skillsCount={skills.length}
-        activeSkillsCount={skills.filter(s => s.enabled).length}
-        sessionCount={sessions.length}
-        codeAssistant={codeAssistant}
-        codingSpace={codingSpace}
-        onToggleCodeAssistant={handleToggleCodeAssistant}
-        onToggleCodingSpace={handleToggleCodingSpace}
-        onOpenConsole={() => setShowConsole(true)}
-        onOpenTerminal={() => setShowTerminal(true)}
-        onOpenFiles={handleOpenFiles}
-        onOpenPersonality={() => setShowPersonality(true)}
-        onOpenSkills={() => setShowSkills(true)}
-        onOpenModels={() => setShowModels(true)}
-        onOpenMemory={() => setShowMemory(true)}
-        onLoadModel={handleLoadModel}
-        onRestartServer={handleRestartServer}
-      />
 
       {showPersonality && (
         <div className="modal-overlay" onClick={() => setShowPersonality(false)}>
@@ -654,6 +945,29 @@ export default function App() {
         />
       )}
 
+      {showAgents && (
+        <AgentsPanel
+          agents={agents}
+          activeSession={activeOrchestration}
+          onToggleAgent={handleToggleAgent}
+          onUpdateAgent={handleUpdateAgent}
+          onAddAgent={handleAddAgent}
+          onRemoveAgent={handleRemoveAgent}
+          onClose={() => setShowAgents(false)}
+        />
+      )}
+
+      {showProviders && (
+        <ProvidersPanel
+          providers={providers}
+          activeProvider={activeProvider}
+          onSelectProvider={handleSelectProvider}
+          onAddProvider={handleAddProvider}
+          onRemoveProvider={handleRemoveProvider}
+          onClose={() => setShowProviders(false)}
+        />
+      )}
+
       {showExplorer && explorerRoot && (
         <FileExplorer
           rootDir={explorerRoot}
@@ -662,6 +976,30 @@ export default function App() {
           floating
         />
       )}
+
+      <BottomPanel
+        status={backendStatus}
+        activeModelName={activeModel?.name}
+        skillsCount={skills.length}
+        activeSkillsCount={skills.filter(s => s.enabled).length}
+        sessionCount={sessions.length}
+        agentsCount={agents.length}
+        activeAgentsCount={agents.filter(a => a.enabled).length}
+        codeAssistant={codeAssistant}
+        codingSpace={codingSpace}
+        onToggleCodeAssistant={handleToggleCodeAssistant}
+        onToggleCodingSpace={handleToggleCodingSpace}
+        onOpenConsole={() => setShowConsole(true)}
+        onOpenTerminal={() => setShowTerminal(true)}
+        onOpenFiles={handleOpenFiles}
+        onOpenPersonality={() => setShowPersonality(true)}
+        onOpenSkills={() => setShowSkills(true)}
+        onOpenModels={() => setShowModels(true)}
+        onOpenMemory={() => setShowMemory(true)}
+        onOpenAgents={() => setShowAgents(true)}
+        onLoadModel={handleLoadModel}
+        onRestartServer={handleRestartServer}
+      />
 
       <input
         ref={fileInputRef}

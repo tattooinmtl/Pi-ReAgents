@@ -11,10 +11,11 @@ interface ModelManagerUIProps {
 }
 
 const SUGGESTED_MODELS = [
-  { repo: 'TheBloke/Llama-2-7B-Chat-GGUF', file: 'llama-2-7b-chat.Q4_K_M.gguf' },
-  { repo: 'TheBloke/Llama-2-13B-Chat-GGUF', file: 'llama-2-13b-chat.Q4_K_M.gguf' },
+  { repo: 'Jackrong/Qwen3.5-9B-DeepSeek-V4-Flash-GGUF', file: 'Qwen3.5-9B-DeepSeek-V4-Flash-Q4_K_M.gguf' },
   { repo: 'TheBloke/Mistral-7B-Instruct-v0.2-GGUF', file: 'mistral-7b-instruct-v0.2.Q4_K_M.gguf' },
   { repo: 'TheBloke/Mixtral-8x7B-Instruct-v0.1-GGUF', file: 'mixtral-8x7b-instruct-v0.1.Q4_K_M.gguf' },
+  { repo: 'TheBloke/Llama-2-7B-Chat-GGUF', file: 'llama-2-7b-chat.Q4_K_M.gguf' },
+  { repo: 'TheBloke/Llama-2-13B-Chat-GGUF', file: 'llama-2-13b-chat.Q4_K_M.gguf' },
   { repo: 'TheBloke/CodeLlama-7B-Instruct-GGUF', file: 'codellama-7b-instruct.Q4_K_M.gguf' },
   { repo: 'microsoft/Phi-3-mini-4k-instruct-gguf', file: 'Phi-3-mini-4k-instruct-q4.gguf' },
 ]

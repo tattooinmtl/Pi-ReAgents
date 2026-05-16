@@ -250,6 +250,13 @@ export function CodingSpace({ rootDir, editingFile, onFileOpen }: CodingSpacePro
     } catch { setStatus('Save failed') }
   }, [openFile, api])
 
+  // Respond to File > Save File from the native menu bar
+  useEffect(() => {
+    const handler = () => saveFile()
+    window.addEventListener('menu-save-file', handler)
+    return () => window.removeEventListener('menu-save-file', handler)
+  }, [saveFile])
+
   const closeFile = useCallback(() => {
     setOpenFile(null)
     setShowPreview(false)

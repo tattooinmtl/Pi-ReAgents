@@ -5,6 +5,7 @@ memory/
 workspace/
 *.gguf
 *.ggml
+llama/last-model.txt
 *.log
 .env
 .DS_Store

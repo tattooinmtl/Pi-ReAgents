@@ -39,4 +39,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   openFileDialog: (filters) => ipcRenderer.invoke('select-file', filters),
   openDirectoryDialog: () => ipcRenderer.invoke('select-directory'),
+  quitApp: () => ipcRenderer.invoke('quit-app'),
+  onMenuAction: (callback) => {
+    const handler = (_event, action) => callback(action)
+    ipcRenderer.on('menu-action', handler)
+    return () => ipcRenderer.removeListener('menu-action', handler)
+  },
+  sendAppState: (state) => ipcRenderer.send('app-state-change', state),
 })

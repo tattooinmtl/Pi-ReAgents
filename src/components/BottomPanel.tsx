@@ -6,6 +6,8 @@ interface BottomPanelProps {
   skillsCount: number
   activeSkillsCount: number
   sessionCount: number
+  agentsCount: number
+  activeAgentsCount: number
   codeAssistant: boolean
   codingSpace: boolean
   onToggleCodeAssistant: () => void
@@ -17,6 +19,7 @@ interface BottomPanelProps {
   onOpenSkills: () => void
   onOpenModels: () => void
   onOpenMemory: () => void
+  onOpenAgents: () => void
   onLoadModel: () => void
   onRestartServer: () => void
 }
@@ -27,6 +30,8 @@ export function BottomPanel({
   skillsCount,
   activeSkillsCount,
   sessionCount,
+  agentsCount,
+  activeAgentsCount,
   codeAssistant,
   codingSpace,
   onToggleCodeAssistant,
@@ -38,6 +43,7 @@ export function BottomPanel({
   onOpenSkills,
   onOpenModels,
   onOpenMemory,
+  onOpenAgents,
   onLoadModel,
   onRestartServer,
 }: BottomPanelProps) {
@@ -99,6 +105,9 @@ export function BottomPanel({
         </button>
         <button className="btn btn-tab" onClick={onOpenMemory} title="Memory Sessions">
           Memory ({sessionCount})
+        </button>
+        <button className="btn btn-tab" onClick={onOpenAgents} title="Multi-agent orchestration">
+          Agents ({activeAgentsCount}/{agentsCount})
         </button>
       </div>
 

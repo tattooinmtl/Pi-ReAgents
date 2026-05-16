@@ -60,7 +60,71 @@ export interface ModelLoadProgress {
   total: number
 }
 
+export interface GenerationStats {
+  tokensPerSec: number
+  tokenCount: number
+  promptTokens: number
+  elapsedSec: number
+}
+
 export type BackendStatus = 'unloaded' | 'loading' | 'ready' | 'error'
+
+export type ProviderType = 'local' | 'openai' | 'ollama' | 'custom'
+
+export interface ProviderConfig {
+  id: string
+  name: string
+  type: ProviderType
+  baseUrl?: string
+  apiKey?: string
+  model?: string
+}
+
+// ── Agent System ──────────────────────────────────────────────────────────────
+
+export type AgentStatus = 'idle' | 'queued' | 'running' | 'done' | 'error' | 'skipped'
+
+export interface AgentDefinition {
+  id: string
+  name: string
+  description: string
+  systemPrompt: string
+  enabled: boolean
+  icon: string
+  maxTokens?: number
+  temperature?: number
+}
+
+export interface AgentTask {
+  agentId: string
+  taskDescription: string
+  contextSnippet?: string
+  priority: number
+}
+
+export interface AgentResult {
+  agentId: string
+  agentName: string
+  status: AgentStatus
+  output: string
+  partialOutput: string
+  startedAt: number
+  finishedAt?: number
+  error?: string
+}
+
+export type OrchestrationPhase = 'decomposing' | 'dispatching' | 'synthesizing' | 'done' | 'error'
+
+export interface OrchestrationSession {
+  id: string
+  userMessage: string
+  tasks: AgentTask[]
+  results: AgentResult[]
+  synthesisOutput: string
+  startedAt: number
+  finishedAt?: number
+  phase: OrchestrationPhase
+}
 
 export interface FileNode {
   name: string

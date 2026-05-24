@@ -17,7 +17,9 @@ import { NeuralEngine } from './engine/NeuralEngine'
 import { SkillsManager } from './skills/SkillsManager'
 import { MemoryManager } from './memory/MemoryManager'
 import { ModelManager } from './models/ModelManager'
-import type { Message, PersonalityConfig, Skill, ModelConfig, MemorySession, BackendStatus, ProviderConfig, AgentDefinition, OrchestrationSession, GenerationStats } from './types'
+import type { Message, PersonalityConfig, Skill, ModelConfig, MemorySession, BackendStatus, ProviderConfig, AgentDefinition, OrchestrationSession, GenerationStats, ContextFile, Book, ChapterStatus } from './types'
+import { BookManager } from './books/BookManager'
+import { BookPanel } from './components/BookPanel'
 
 const LOCAL_PROVIDER: ProviderConfig = { id: 'local', name: 'Local (llama.cpp)', type: 'local' }
 
@@ -101,6 +103,10 @@ export default function App() {
   const [showTerminal, setShowTerminal] = useState(false)
   const [showProviders, setShowProviders] = useState(false)
   const [showAgents, setShowAgents] = useState(false)
+  const [showBook, setShowBook] = useState(false)
+  const [activeBook, setActiveBook] = useState<Book | null>(null)
+  const [bookChapterContents, setBookChapterContents] = useState<Record<string, string>>({})
+  const [isBuilding, setIsBuilding] = useState(false)
   const [agents, setAgents] = useState<AgentDefinition[]>([])
   const [activeOrchestration, setActiveOrchestration] = useState<OrchestrationSession | null>(null)
   const [isOrchestrating, setIsOrchestrating] = useState(false)
@@ -110,6 +116,7 @@ export default function App() {
   const [activeProvider, setActiveProvider] = useState<ProviderConfig>(LOCAL_PROVIDER)
   // Context notes injected via /btw — appended to system prompt on every send
   const [btwContext, setBtwContext] = useState('')
+  const [contextFiles, setContextFiles] = useState<ContextFile[]>([])
   const [downloadState, setDownloadState] = useState<{
     filename: string; pct: number; received: number; total: number; bytesPerSec: number
   } | null>(null)
@@ -121,7 +128,22 @@ export default function App() {
   const skillsRef = useRef(new SkillsManager())
   const memoryRef = useRef(new MemoryManager())
   const modelManagerRef = useRef(new ModelManager())
+  const bookManagerRef = useRef(new BookManager())
   const orchestratorRef = useRef<AgentOrchestrator | null>(null)
+  const activeBookRef = useRef<Book | null>(null)
+  useEffect(() => { activeBookRef.current = activeBook }, [activeBook])
+
+  // Reload chapter file contents whenever the active book changes
+  useEffect(() => {
+    if (!activeBook) { setBookChapterContents({}); return }
+    bookManagerRef.current.readAllChapters(activeBook)
+      .then(results => {
+        const map: Record<string, string> = {}
+        results.forEach(({ chapter, content }) => { map[chapter.id] = content })
+        setBookChapterContents(map)
+      })
+      .catch(() => {})
+  }, [activeBook])
   const fileInputRef = useRef<HTMLInputElement>(null)
   // Always holds the latest menu-action handler so the IPC listener (set up
   // once at mount) never captures stale state via closure.
@@ -140,10 +162,53 @@ export default function App() {
   const skillsManager = skillsRef.current
   const memoryManager = memoryRef.current
   const modelManager = modelManagerRef.current
+  const bookManager = bookManagerRef.current
 
   const addLog = useCallback((msg: string) => {
     setLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`])
   }, [])
+
+  // When the sci-fi writer skill is enabled, greet the user and summarise the current book state
+  useEffect(() => {
+    skillsManager.setOnEnableCallback((skill: Skill) => {
+      if (skill.id !== 'hitchhiker-scifi-writer') return
+
+      setTimeout(async () => {
+        const book = activeBookRef.current
+
+        const systemSetup = book
+          ? `The user just activated the Hitchhiker's Guide Sci-Fi Writer skill.
+Book: "${book.title}" by ${book.author || 'TBD'} (${book.genre || 'Science Fiction'})
+${book.description ? `Synopsis: ${book.description}` : ''}
+Chapters (${book.chapters.length}): ${book.chapters.map(c => `Ch.${c.number} "${c.title}" [${c.status}]`).join(', ')}
+
+Greet in full Adams-style ironic voice. Acknowledge the book by name and chapter status. Ask what they want to work on next. Do NOT re-ask for the title, author, or setup info.`
+          : `The user just activated the Hitchhiker's Guide Sci-Fi Writer skill and has no book project yet.
+Greet them in your ironic Adams style and begin the book setup wizard: ask for the book title first, then author, then Chapter 1 name. Mention the 📚 Book button in the bottom bar and the 📎 attach button for existing files.`
+
+        const responseId = `skill-setup-${Date.now()}`
+        setMessages(prev => [
+          ...prev,
+          { id: responseId, role: 'assistant', content: '', timestamp: Date.now() },
+        ])
+
+        engine.generate(
+          [{ id: 'activate-input', role: 'user', content: systemSetup, timestamp: Date.now() }],
+          skill.content,
+          personality,
+          (token) => {
+            setMessages(prev => {
+              const idx = prev.findIndex(m => m.id === responseId)
+              if (idx === -1) return prev
+              const updated = [...prev]
+              updated[idx] = { ...updated[idx], content: updated[idx].content + token }
+              return updated
+            })
+          }
+        ).catch(() => {})
+      }, 200)
+    })
+  }, [skillsManager, engine, personality]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     // Wire the engine's internal status transitions directly into React state
@@ -221,6 +286,22 @@ export default function App() {
       unsubLogs = api.onServerLog((data) => {
         setLogs((prev) => [...prev, ...data.trim().split('\n').filter(Boolean)])
       })
+      api.onServerCrash?.(() => {
+        setBackendStatus('error')
+        engine.stopGeneration()
+        setIsProcessing(false)
+        addLog('⚠ Server crashed — model ran out of memory or VRAM. Reload a model to continue.')
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `crash-${Date.now()}`,
+            role: 'system' as const,
+            content: 'The AI server crashed mid-response — likely out of RAM or VRAM. Try a smaller/more quantized model (Q4 instead of Q8), or close other apps to free memory. Use /models to reload.',
+            timestamp: Date.now(),
+          },
+        ])
+      })
+
       unsubDl = api.onDownloadProgress?.((data) => {
         const now = Date.now()
         let bytesPerSec = 0
@@ -277,15 +358,55 @@ export default function App() {
     const skillContext = enabledSkills.length > 0
       ? `\n\nActive Skills:\n${skillsManager.getCombinedSystemPrompt()}`
       : ''
-    const fileContext = openEditingFile
+    const editingContext = openEditingFile
       ? `\n\nCurrently editing: ${openEditingFile.name}\nFile path: ${openEditingFile.path}`
       : ''
     const btwBlock = btwContext ? `\n\nContext notes:\n${btwContext}` : ''
-    const systemPrompt = `${personality.systemPrompt}${skillContext}${fileContext}${btwBlock}`
+
+    // Inject attached context files — cap at 6000 chars each (HTML is pre-stripped to plain text)
+    const FILE_CHAR_CAP = 6000
+    const attachedFileContext = contextFiles.length > 0 ? (() => {
+      const parts = contextFiles.map(f => {
+        const body = f.content.length > FILE_CHAR_CAP
+          ? f.content.slice(0, FILE_CHAR_CAP) + '\n[... truncated]'
+          : f.content
+        return `### ${f.name}\n${body}`
+      })
+      return `\n\nAttached files:\n${parts.join('\n\n---\n\n')}`
+    })() : ''
+
+    // Inject lean book context: always metadata + TOC, only inject chapter content for the open chapter
+    const bookContext = activeBook ? (() => {
+      const toc = activeBook.chapters.map(c =>
+        `  Ch.${c.number}: ${c.title} [${c.status}]`
+      ).join('\n')
+
+      // Only inject the currently open chapter's content (max 3000 chars)
+      const CHAPTER_CHAR_CAP = 3000
+      let openChapterBlock = ''
+      if (openEditingFile) {
+        const ch = activeBook.chapters.find(c => c.filePath === openEditingFile.path)
+        if (ch) {
+          const raw = bookChapterContents[ch.id] || ''
+          const body = raw.length > CHAPTER_CHAR_CAP
+            ? raw.slice(0, CHAPTER_CHAR_CAP) + '\n[... truncated — use "continue at the end" to append]'
+            : raw || '[no content yet]'
+          openChapterBlock = `\n\nOpen chapter — Ch.${ch.number}: ${ch.title} (${ch.status}):\n${body}`
+        }
+      }
+
+      return `\n\nBook: "${activeBook.title}" by ${activeBook.author || 'TBD'} (${activeBook.genre || 'TBD'})${activeBook.description ? `\nSynopsis: ${activeBook.description}` : ''}\nChapters:\n${toc}${openChapterBlock}`
+    })() : ''
+
+    const systemPrompt = `${personality.systemPrompt}${skillContext}${editingContext}${bookContext}${attachedFileContext}${btwBlock}`
 
     // Use the ref so we always have the current history without making
     // handleSend depend on the frequently-updated messages state.
-    const historyForPrompt: Message[] = [...messagesRef.current, userMsg]
+    // Filter out empty assistant placeholders from failed previous generations.
+    const historyForPrompt: Message[] = [
+      ...messagesRef.current.filter(m => !(m.role === 'assistant' && !m.content.trim())),
+      userMsg,
+    ]
 
     setMessages((prev) => [...prev, userMsg])
     setIsProcessing(true)
@@ -318,7 +439,8 @@ export default function App() {
             return updated
           })
         },
-        (stats) => setGenerationStats(stats)
+        (stats) => setGenerationStats(stats),
+        (removedCount) => addLog(`Context compacted: removed ${removedCount} oldest message${removedCount !== 1 ? 's' : ''} to fit context window`)
       )
 
       // Save using the same ID that is displayed in the UI.
@@ -328,6 +450,8 @@ export default function App() {
       const updated = await memoryManager.listSessions()
       setSessions(updated)
     } catch (err) {
+      // Remove the empty assistant placeholder, then show the error.
+      setMessages((prev) => prev.filter(m => m.id !== assistantMsg.id))
       const errorMsg: Message = {
         id: `msg-${Date.now() + 2}`,
         role: 'system',
@@ -338,12 +462,202 @@ export default function App() {
     } finally {
       setIsProcessing(false)
     }
-  }, [personality, activeModel, skillsManager, memoryManager, engine, openEditingFile, btwContext])
+  }, [personality, activeModel, skillsManager, memoryManager, engine, openEditingFile, btwContext, contextFiles, activeBook, bookChapterContents])
 
   const handleStop = useCallback(() => {
     engine.stopGeneration()
     setIsProcessing(false)
   }, [engine])
+
+  const handleAttachContextFile = useCallback(async () => {
+    const api = window.electronAPI
+    if (!api) return
+    const path = await api.openFileDialog([
+      { name: 'Text / HTML / Markdown', extensions: ['html', 'htm', 'md', 'txt', 'json'] },
+    ])
+    if (!path) return
+    if (contextFiles.some(f => f.path === path)) return // already attached
+    try {
+      let content = await api.readFile(path)
+      const name = path.split(/[\\/]/).pop() || path
+      // Strip HTML tags so the AI reads plain text, not markup
+      if (name.endsWith('.html') || name.endsWith('.htm')) {
+        content = content
+          .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+          .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+          .replace(/<[^>]+>/g, ' ')
+          .replace(/&nbsp;/g, ' ')
+          .replace(/&amp;/g, '&')
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/\s{2,}/g, ' ')
+          .trim()
+      }
+      setContextFiles(prev => [...prev, { path, name, content }])
+      addLog(`Attached: ${name} (${Math.round(content.length / 1024 * 10) / 10} KB as plain text)`)
+    } catch (err) {
+      addLog(`Failed to attach file: ${err instanceof Error ? err.message : 'error'}`)
+    }
+  }, [contextFiles, addLog])
+
+  const handleRemoveContextFile = useCallback((path: string) => {
+    setContextFiles(prev => prev.filter(f => f.path !== path))
+  }, [])
+
+  // ── Book handlers ────────────────────────────────────────────────────────────
+
+  const handleCreateBook = useCallback(async (
+    title: string, author: string, genre: string, description: string
+  ) => {
+    const api = window.electronAPI
+    if (!api) return
+    try {
+      const workspacePath = await api.getWorkspaceDir().catch(() => '')
+      const book = await bookManager.createBook(title, author, genre, description, workspacePath)
+      setActiveBook(book)
+      addLog(`Book created: "${title}" at ${book.projectPath}`)
+    } catch (err) {
+      addLog(`Failed to create book: ${err instanceof Error ? err.message : 'error'}`)
+    }
+  }, [bookManager, addLog])
+
+  const handleOpenBook = useCallback(async () => {
+    const api = window.electronAPI
+    if (!api) return
+    try {
+      const filePath = await api.openFileDialog([{ name: 'Book Project', extensions: ['json'] }])
+      if (!filePath) return
+      const projectPath = filePath.replace(/[\\/]book\.json$/i, '')
+      const book = await bookManager.loadBook(projectPath)
+      setActiveBook(book)
+      addLog(`Book opened: "${book.title}" from ${projectPath}`)
+    } catch (err) {
+      addLog(`Failed to open book: ${err instanceof Error ? err.message : 'error'}`)
+    }
+  }, [bookManager, addLog])
+
+  const handleAddChapter = useCallback(async (title: string) => {
+    if (!activeBook) return
+    try {
+      const updated = { ...activeBook }
+      await bookManager.addChapter(updated, title)
+      setActiveBook({ ...updated })
+      addLog(`Chapter added: "${title}"`)
+    } catch (err) {
+      addLog(`Failed to add chapter: ${err instanceof Error ? err.message : 'error'}`)
+    }
+  }, [activeBook, bookManager, addLog])
+
+  const handleMarkChapter = useCallback(async (chapterId: string, status: ChapterStatus) => {
+    if (!activeBook) return
+    const ch = activeBook.chapters.find(c => c.id === chapterId)
+    if (!ch) return
+    ch.status = status
+    await bookManager.saveBook(activeBook)
+    setActiveBook({ ...activeBook })
+  }, [activeBook, bookManager])
+
+  const handleOpenChapter = useCallback((filePath: string, chapterName: string) => {
+    setOpenEditingFile({ path: filePath, name: chapterName })
+    if (!codingSpace) {
+      // Auto-open the coding space so the file is immediately visible
+      setCodingSpace(true)
+    }
+    addLog(`Opened ${chapterName} in editor`)
+  }, [codingSpace, addLog])
+
+  const handleSendToChapter = useCallback(async (text: string) => {
+    const api = window.electronAPI
+    if (!api || !openEditingFile) return
+    try {
+      const existing = await api.readFile(openEditingFile.path)
+      const separator = existing.trim().length > 0 ? '\n\n' : ''
+      await api.writeFile(openEditingFile.path, existing + separator + text.trim())
+      // Refresh chapter content cache if this is a known chapter
+      if (activeBook) {
+        const ch = activeBook.chapters.find(c => c.filePath === openEditingFile.path)
+        if (ch) {
+          const newContent = existing + separator + text.trim()
+          setBookChapterContents(prev => ({ ...prev, [ch.id]: newContent }))
+        }
+      }
+      addLog(`Content appended to ${openEditingFile.name}`)
+    } catch (err) {
+      addLog(`Failed to send to chapter: ${err instanceof Error ? err.message : 'error'}`)
+    }
+  }, [openEditingFile, activeBook, addLog])
+
+  const handleAttachChapterFile = useCallback(async (chapterId: string) => {
+    const api = window.electronAPI
+    if (!api || !activeBook) return
+    const path = await api.openFileDialog([
+      { name: 'Text Files', extensions: ['md', 'html', 'htm', 'txt'] },
+    ])
+    if (!path) return
+    try {
+      const content = await api.readFile(path)
+      await bookManager.updateChapterContent(activeBook, chapterId, content)
+      setActiveBook({ ...activeBook })
+      setBookChapterContents(prev => ({ ...prev, [chapterId]: content }))
+      addLog(`Chapter content attached from ${path.split('\\').pop()}`)
+    } catch (err) {
+      addLog(`Failed to attach chapter file: ${err instanceof Error ? err.message : 'error'}`)
+    }
+  }, [activeBook, bookManager, addLog])
+
+  const handleBuildBook = useCallback(async () => {
+    if (!activeBook || isBuilding) return
+    setIsBuilding(true)
+    setShowBook(false)
+    try {
+      const chapters = await bookManager.readAllChapters(activeBook)
+      const prompt = bookManager.buildBookPrompt(activeBook, chapters)
+
+      const buildMsg: Message = {
+        id: `msg-${Date.now()}`,
+        role: 'user',
+        content: `/build book — "${activeBook.title}"`,
+        timestamp: Date.now(),
+      }
+      const responseMsg: Message = {
+        id: `msg-${Date.now() + 1}`,
+        role: 'assistant',
+        content: '',
+        timestamp: Date.now(),
+        model: activeModel?.name,
+      }
+      setMessages(prev => [...prev, buildMsg, responseMsg])
+      setIsProcessing(true)
+
+      let fullBook = ''
+      await engine.generate(
+        [{ id: 'build-input', role: 'user', content: prompt, timestamp: Date.now() }],
+        personality.systemPrompt,
+        { ...personality, maxTokens: 4096 },
+        (token) => {
+          fullBook += token
+          setMessages(prev => {
+            const updated = [...prev]
+            const last = updated[updated.length - 1]
+            if (last.role === 'assistant') updated[updated.length - 1] = { ...last, content: fullBook }
+            return updated
+          })
+        },
+        undefined,
+        (removed) => addLog(`Context compacted: removed ${removed} messages`)
+      )
+
+      // Save the built book
+      const outPath = `${activeBook.projectPath}\\full-book.md`
+      await window.electronAPI?.writeFile(outPath, fullBook)
+      addLog(`Full book saved to ${outPath}`)
+    } catch (err) {
+      addLog(`Build failed: ${err instanceof Error ? err.message : 'error'}`)
+    } finally {
+      setIsBuilding(false)
+      setIsProcessing(false)
+    }
+  }, [activeBook, isBuilding, bookManager, engine, personality, activeModel, addLog])
 
   const handleLoadSkillsDirectory = useCallback(async () => {
     const api = window.electronAPI
@@ -456,7 +770,7 @@ export default function App() {
       setModels(modelManager.getAllModels())
       setActiveModel(config)
       modelManager.setActiveModel(config.id)
-      await engine.startServer(config.path, config.chatTemplate)
+      await engine.startServer(config.path)
       addLog('Server ready')
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to load model'
@@ -483,7 +797,7 @@ export default function App() {
     }
     addLog(`Restarting server with: ${active.name}`)
     try {
-      await engine.startServer(active.path, active.chatTemplate)
+      await engine.startServer(active.path)
       addLog('Server ready')
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Restart failed'
@@ -568,14 +882,18 @@ export default function App() {
     e.target.value = ''
   }, [registerModel])
 
-  const handleSelectModel = useCallback(async (id: string) => {
+  const handleSelectModel = useCallback(async (id: string, autoConfig?: { ctxSize: number; ngl: number }) => {
     const config = modelManager.setActiveModel(id)
     if (!config) return
 
     setActiveModel(config)
 
+    if (autoConfig) {
+      addLog(`Auto-config: ctx ${autoConfig.ctxSize} tokens, ${autoConfig.ngl > 0 ? `GPU (${autoConfig.ngl} layers)` : 'CPU only'}`)
+    }
+
     try {
-      await engine.startServer(config.path, config.chatTemplate)
+      await engine.startServer(config.path, autoConfig)
       setShowModels(false)
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to start server'
@@ -738,11 +1056,59 @@ export default function App() {
     setMessages((prev) => [...prev, msg])
   }, [])
 
+  const handleCompact = useCallback(async () => {
+    const current = messagesRef.current.filter(m => m.role !== 'system')
+    if (current.length === 0) { addSystemMsg('Nothing to compact yet.'); return }
+
+    addSystemMsg('Compacting context — summarising conversation…')
+    setIsProcessing(true)
+
+    const summaryPrompt = `You are summarising a writing session to save context space.
+Write a concise but complete story-state summary covering:
+- What has been written or decided so far (plot points, scenes, characters introduced)
+- Where the story currently is (last scene, last action, last line if available)
+- Any open threads, unresolved questions, or planned next steps the user mentioned
+- Writing style notes or character voice details discussed
+
+Keep it under 400 words. Write it as a reference note, not prose.`
+
+    try {
+      let summary = ''
+      await engine.generate(
+        current,
+        summaryPrompt,
+        { ...personality, maxTokens: 512 },
+        (token) => { summary += token }
+      )
+
+      // Save session before wiping messages
+      for (const m of current) await memoryManager.saveMessage(m).catch(() => {})
+      const updated = await memoryManager.listSessions().catch(() => sessions)
+      setSessions(updated)
+
+      // Replace conversation with a compact summary note
+      const summaryNote = `[COMPACT SUMMARY — story state at context reset]\n\n${summary.trim()}`
+      setBtwContext((prev) => prev ? `${prev}\n\n${summaryNote}` : summaryNote)
+      setMessages([{
+        id: `compact-${Date.now()}`,
+        role: 'system',
+        content: `Context compacted. Story-state summary saved as context note:\n\n${summary.trim()}`,
+        timestamp: Date.now(),
+      }])
+      addLog('Context compacted — summary injected as context note')
+    } catch (err) {
+      addSystemMsg(`Compact failed: ${err instanceof Error ? err.message : 'error'}`)
+    } finally {
+      setIsProcessing(false)
+    }
+  }, [engine, personality, memoryManager, sessions, addSystemMsg, addLog])
+
   const HELP_TEXT = `Available commands:
 /help — Show this help
 /providers — Manage AI providers (local, OpenAI, Ollama, custom)
 /btw <note> — Add a private context note (injected into system prompt)
-/clear — Clear current chat
+/compact — Summarise conversation & reset context (use when ring hits ~90%)
+/clear — Clear current chat (no summary saved)
 /new — Start a new session
 /models — Open model manager
 /skills — Open skills manager
@@ -770,6 +1136,10 @@ export default function App() {
           ...prev,
           { id: `msg-${Date.now()}`, role: 'system', content: `[BTW] ${args}`, timestamp: Date.now() },
         ])
+        break
+
+      case 'compact':
+        handleCompact()
         break
 
       case 'clear':
@@ -843,6 +1213,22 @@ export default function App() {
         setShowAgents(true)
         break
 
+      case 'book':
+        if (args.toLowerCase() === 'build') {
+          handleBuildBook()
+        } else if (args.toLowerCase() === 'load' || args.toLowerCase() === 'open') {
+          handleOpenBook()
+        } else {
+          setShowBook(true)
+        }
+        break
+
+      case 'build':
+        if (args.toLowerCase() === 'book') {
+          handleBuildBook()
+        }
+        break
+
       case 'export': {
         const lines = messagesRef.current
           .filter((m) => !m.content.startsWith('[BTW]'))
@@ -865,7 +1251,7 @@ export default function App() {
       default:
         addSystemMsg(`Unknown command: /${cmd}\nType /help to see all commands.`)
     }
-  }, [addSystemMsg, addLog, memoryManager, handleToggleCodeAssistant, messagesRef]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [addSystemMsg, addLog, memoryManager, handleToggleCodeAssistant, messagesRef, handleCompact, handleBuildBook, handleOpenBook]) // eslint-disable-line react-hooks/exhaustive-deps
 
 
   return (
@@ -889,7 +1275,13 @@ export default function App() {
             onStop={isOrchestrating ? handleStopOrchestration : handleStop}
             onApplyCode={handleApplyCode}
             onOpenInCodingSpace={handleOpenInCodingSpace}
+            onSendToChapter={activeBook && openEditingFile ? handleSendToChapter : undefined}
+            openBookFileName={activeBook && openEditingFile ? openEditingFile.name : null}
             generationStats={generationStats}
+            contextLength={personality.contextLength}
+            contextFiles={contextFiles}
+            onAttachFile={handleAttachContextFile}
+            onRemoveFile={handleRemoveContextFile}
           />
         </div>
         {codingSpace && explorerRoot && (
@@ -900,6 +1292,22 @@ export default function App() {
           />
         )}
       </div>
+
+      {showBook && (
+        <BookPanel
+          book={activeBook}
+          isBuilding={isBuilding}
+          openChapterPath={openEditingFile?.path}
+          onCreateBook={handleCreateBook}
+          onOpenBook={handleOpenBook}
+          onOpenChapter={handleOpenChapter}
+          onAddChapter={handleAddChapter}
+          onMarkChapter={handleMarkChapter}
+          onBuildBook={handleBuildBook}
+          onAttachChapterFile={handleAttachChapterFile}
+          onClose={() => setShowBook(false)}
+        />
+      )}
 
       {showPersonality && (
         <div className="modal-overlay" onClick={() => setShowPersonality(false)}>
@@ -997,6 +1405,8 @@ export default function App() {
         onOpenModels={() => setShowModels(true)}
         onOpenMemory={() => setShowMemory(true)}
         onOpenAgents={() => setShowAgents(true)}
+        onOpenBook={() => setShowBook(true)}
+        activeBookTitle={activeBook?.title}
         onLoadModel={handleLoadModel}
         onRestartServer={handleRestartServer}
       />

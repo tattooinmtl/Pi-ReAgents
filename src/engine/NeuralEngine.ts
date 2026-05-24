@@ -1,4 +1,4 @@
-import type { Message, PersonalityConfig, ModelLoadProgress, BackendStatus, ChatTemplate, ProviderConfig, GenerationStats } from '../types'
+import type { Message, PersonalityConfig, ModelLoadProgress, BackendStatus, ProviderConfig, GenerationStats } from '../types'
 
 const DEFAULT_LOCAL_PROVIDER: ProviderConfig = {
   id: 'local',
@@ -14,7 +14,6 @@ export class NeuralEngine {
   private onStatusChange: ((status: BackendStatus) => void) | null = null
   private serverHost = '127.0.0.1'
   private serverPort = 8080
-  private chatTemplate: ChatTemplate = 'zephyr'
   private provider: ProviderConfig = DEFAULT_LOCAL_PROVIDER
 
   private get baseUrl() {
@@ -54,11 +53,10 @@ export class NeuralEngine {
     this.onStatusChange?.(status)
   }
 
-  async startServer(modelPath: string, template?: ChatTemplate): Promise<void> {
+  async startServer(modelPath: string, config?: { ctxSize?: number; ngl?: number }): Promise<void> {
     // External providers don't use the local llama-server
     if (this.provider.type !== 'local') {
       this.currentModelPath = modelPath
-      if (template) this.chatTemplate = template
       this.setStatus('ready')
       return
     }
@@ -66,12 +64,11 @@ export class NeuralEngine {
     await this.stopServer()
     this.setStatus('loading')
     this.currentModelPath = modelPath
-    if (template) this.chatTemplate = template
     this.reportProgress('starting server', 10, 100)
 
     const api = window.electronAPI
     if (api) {
-      await api.startServer(modelPath).catch((err: Error) => {
+      await api.startServer(modelPath, config).catch((err: Error) => {
         console.warn('[NeuralEngine] Spawn failed, trying to connect anyway:', err.message)
       })
     }
@@ -113,7 +110,8 @@ export class NeuralEngine {
     systemPrompt: string,
     personality: PersonalityConfig,
     onToken?: (token: string) => void,
-    onStats?: (stats: GenerationStats) => void
+    onStats?: (stats: GenerationStats) => void,
+    onCompact?: (removedCount: number) => void
   ): Promise<string> {
     const { type } = this.provider
 
@@ -123,12 +121,43 @@ export class NeuralEngine {
     if (type === 'ollama') {
       return this.generateOllama(messages, systemPrompt, personality, onToken, onStats)
     }
-    return this.generateLocal(messages, systemPrompt, personality, onToken, onStats)
+    return this.generateLocal(messages, systemPrompt, personality, onToken, onStats, onCompact)
   }
 
-  // ── Local llama-server (SSE /completion) ──────────────────────────────────
+  // ── Local llama-server (/v1/chat/completions — auto template) ───────────────
+  // Uses the OpenAI-compatible endpoint so llama.cpp applies the model's own
+  // built-in chat template (read from the GGUF file).  This works correctly
+  // for Gemma, Llama, Phi, Mistral, Qwen — any model — without us needing to
+  // know or guess the template format.
 
   private async generateLocal(
+    messages: Message[],
+    systemPrompt: string,
+    personality: PersonalityConfig,
+    onToken?: (token: string) => void,
+    onStats?: (stats: GenerationStats) => void,
+    onCompact?: (removedCount: number) => void
+  ): Promise<string> {
+    let conversationMessages = messages.filter(m => m.role !== 'system')
+    const originalCount = conversationMessages.length
+
+    while (true) {
+      try {
+        return await this.doLocalChatCompletion(conversationMessages, systemPrompt, personality, onToken, onStats)
+      } catch (err) {
+        const msg = (err as Error).message
+        if (msg.includes('400') && conversationMessages.length > 1) {
+          const dropCount = conversationMessages.length >= 2 ? 2 : 1
+          conversationMessages = conversationMessages.slice(dropCount)
+          onCompact?.(originalCount - conversationMessages.length)
+        } else {
+          throw err
+        }
+      }
+    }
+  }
+
+  private async doLocalChatCompletion(
     messages: Message[],
     systemPrompt: string,
     personality: PersonalityConfig,
@@ -136,32 +165,36 @@ export class NeuralEngine {
     onStats?: (stats: GenerationStats) => void
   ): Promise<string> {
     this.abortController = new AbortController()
-    const fullPrompt = this.buildPrompt(messages, systemPrompt)
+
+    const chatMessages: { role: string; content: string }[] = []
+    if (systemPrompt) chatMessages.push({ role: 'system', content: systemPrompt })
+    for (const m of messages) {
+      chatMessages.push({ role: m.role, content: m.content })
+    }
+
     let response = ''
     let localTokenCount = 0
     let genStart = 0
 
     try {
-      const res = await fetch(`${this.baseUrl}/completion`, {
+      const res = await fetch(`${this.baseUrl}/v1/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          prompt: fullPrompt,
+          model: 'local',
+          messages: chatMessages,
           temperature: personality.temperature,
+          max_tokens: personality.maxTokens,
           top_p: personality.topP,
-          top_k: personality.topK,
-          repeat_penalty: personality.repeatPenalty,
-          n_predict: personality.maxTokens,
-          cache_prompt: true,
           stream: true,
-          mirostat: personality.mirostat ? 2 : 0,
-          mirostat_tau: personality.mirostatTau,
-          mirostat_eta: personality.mirostatEta,
         }),
         signal: this.abortController.signal,
       })
 
-      if (!res.ok) throw new Error(`Server error: ${res.status} ${res.statusText}`)
+      if (!res.ok) {
+        const errBody = await res.text().catch(() => '')
+        throw new Error(`Server error ${res.status}: ${errBody || res.statusText}`)
+      }
 
       const reader = res.body!.getReader()
       const decoder = new TextDecoder()
@@ -183,35 +216,19 @@ export class NeuralEngine {
 
           try {
             const parsed = JSON.parse(data)
-            const token = parsed.content || ''
-
+            const token = parsed.choices?.[0]?.delta?.content || ''
             if (token) {
               if (localTokenCount === 0) genStart = Date.now()
               localTokenCount++
               response += token
               onToken?.(token)
-
-              if (onStats && localTokenCount > 0) {
+              if (onStats) {
                 const elapsed = (Date.now() - genStart) / 1000
                 onStats({
                   tokensPerSec: elapsed > 0 ? localTokenCount / elapsed : 0,
                   tokenCount: localTokenCount,
-                  promptTokens: 0,
+                  promptTokens: parsed.usage?.prompt_tokens ?? 0,
                   elapsedSec: elapsed,
-                })
-              }
-            }
-
-            // Final chunk: use server's precise generation_timings if available
-            if (parsed.stop && onStats) {
-              const t = parsed.generation_timings
-              if (t) {
-                const evalSec = (t.predicted_ms || 0) / 1000
-                onStats({
-                  tokensPerSec: evalSec > 0 ? (t.predicted_n || localTokenCount) / evalSec : 0,
-                  tokenCount: t.predicted_n ?? localTokenCount,
-                  promptTokens: t.prompt_n ?? 0,
-                  elapsedSec: ((t.prompt_ms || 0) + (t.predicted_ms || 0)) / 1000,
                 })
               }
             }
@@ -222,6 +239,10 @@ export class NeuralEngine {
       }
     } catch (err) {
       if ((err as Error).name === 'AbortError') return response
+      const msg = (err as Error).message
+      if (msg.includes('fetch') || msg.includes('network') || msg.includes('connect')) {
+        throw new Error('Cannot reach the local AI server — no model is loaded. Use /models or the model button in the bottom bar to load one.')
+      }
       throw err
     }
 
@@ -309,6 +330,10 @@ export class NeuralEngine {
       }
     } catch (err) {
       if ((err as Error).name === 'AbortError') return response
+      const msg = (err as Error).message
+      if (msg.includes('fetch') || msg.includes('network') || msg.includes('connect')) {
+        throw new Error(`Cannot reach the OpenAI/custom API — check the base URL and API key in /providers.`)
+      }
       throw err
     }
 
@@ -404,6 +429,10 @@ export class NeuralEngine {
       }
     } catch (err) {
       if ((err as Error).name === 'AbortError') return response
+      const msg = (err as Error).message
+      if (msg.includes('fetch') || msg.includes('network') || msg.includes('connect')) {
+        throw new Error(`Cannot reach Ollama — make sure the Ollama service is running (ollama serve).`)
+      }
       throw err
     }
 
@@ -419,64 +448,6 @@ export class NeuralEngine {
     this.abortController?.abort()
     this.abortController = null
     await this.stopServer()
-  }
-
-  private buildPrompt(messages: Message[], systemPrompt: string): string {
-    const template = this.chatTemplate
-    const conversationMessages = messages.filter((m) => m.role !== 'system')
-
-    if (template === 'chatml') {
-      const parts: string[] = []
-      if (systemPrompt) parts.push(`<|im_start|>system\n${systemPrompt}<|im_end|>`)
-      for (const msg of conversationMessages) {
-        parts.push(`<|im_start|>${msg.role}\n${msg.content}<|im_end|>`)
-      }
-      parts.push('<|im_start|>assistant')
-      return parts.join('\n')
-    }
-
-    if (template === 'llama2') {
-      let prompt = ''
-      for (let i = 0; i < conversationMessages.length; i++) {
-        const msg = conversationMessages[i]
-        if (msg.role === 'user') {
-          const sysBlock = i === 0 && systemPrompt ? `<<SYS>>\n${systemPrompt}\n<</SYS>>\n\n` : ''
-          prompt += `[INST] ${sysBlock}${msg.content} [/INST]`
-        } else if (msg.role === 'assistant') {
-          prompt += ` ${msg.content} `
-        }
-      }
-      return prompt
-    }
-
-    if (template === 'phi3') {
-      const parts: string[] = []
-      if (systemPrompt) parts.push(`<|system|>\n${systemPrompt}<|end|>`)
-      for (const msg of conversationMessages) {
-        parts.push(`<|${msg.role}|>\n${msg.content}<|end|>`)
-      }
-      parts.push('<|assistant|>')
-      return parts.join('\n')
-    }
-
-    if (template === 'raw') {
-      const parts: string[] = []
-      if (systemPrompt) parts.push(systemPrompt)
-      for (const msg of conversationMessages) {
-        parts.push(`${msg.role === 'user' ? 'User' : 'Assistant'}: ${msg.content}`)
-      }
-      parts.push('Assistant:')
-      return parts.join('\n\n')
-    }
-
-    // default: zephyr
-    const parts: string[] = []
-    if (systemPrompt) parts.push(`<|system|>\n${systemPrompt}`)
-    for (const msg of conversationMessages) {
-      parts.push(`<|${msg.role}|>\n${msg.content}`)
-    }
-    parts.push('<|assistant|>')
-    return parts.join('\n')
   }
 
   private reportProgress(stage: string, progress: number, total: number) {

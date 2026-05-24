@@ -21,13 +21,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getLlamaDir: () => ipcRenderer.invoke('get-llama-dir'),
   getModelsDir: () => ipcRenderer.invoke('get-models-dir'),
   getWorkspaceDir: () => ipcRenderer.invoke('get-workspace-dir'),
-  startServer: (modelPath) => ipcRenderer.invoke('start-llama-server', modelPath),
+  startServer: (modelPath, config) => ipcRenderer.invoke('start-llama-server', modelPath, config),
   stopServer: () => ipcRenderer.invoke('stop-llama-server'),
+  scanModel: (modelPath) => ipcRenderer.invoke('scan-model', modelPath),
   getServerLogs: () => ipcRenderer.invoke('get-server-logs'),
   onServerLog: (callback) => {
     const handler = (_event, data) => callback(data)
     ipcRenderer.on('server-log', handler)
     return () => ipcRenderer.removeListener('server-log', handler)
+  },
+  onServerCrash: (callback) => {
+    const handler = (_event, data) => callback(data)
+    ipcRenderer.on('server-crashed', handler)
+    return () => ipcRenderer.removeListener('server-crashed', handler)
   },
   startTerminal: (cwd) => ipcRenderer.invoke('start-terminal', cwd),
   sendTerminalInput: (input) => ipcRenderer.invoke('terminal-input', input),

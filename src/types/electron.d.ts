@@ -6,6 +6,21 @@ export interface PathInfo {
   modified: number
 }
 
+export interface ModelAutoConfig {
+  architecture:        string | null
+  nativeContextLength: number | null
+  chatTemplate:        string | null
+  modelSizeMB:         number
+  hardware: {
+    totalRamMB: number
+    freeRamMB:  number
+    vramMB:     number
+    gpuName:    string | null
+  }
+  ctxSize: number
+  ngl:     number
+}
+
 export interface ElectronAPI {
   openFileDialog: (filters?: { name: string; extensions: string[] }[]) => Promise<string | null>
   openDirectoryDialog: () => Promise<string | null>
@@ -24,10 +39,12 @@ export interface ElectronAPI {
   getLlamaDir: () => Promise<string>
   getModelsDir: () => Promise<string>
   getWorkspaceDir: () => Promise<string>
-  startServer: (modelPath: string) => Promise<void>
+  startServer: (modelPath: string, config?: { ctxSize?: number; ngl?: number }) => Promise<void>
+  scanModel: (modelPath: string) => Promise<ModelAutoConfig>
   stopServer: () => Promise<void>
   getServerLogs: () => Promise<string>
   onServerLog: (callback: (data: string) => void) => () => void
+  onServerCrash?: (callback: (data: { code: number | null }) => void) => () => void
   startTerminal: (cwd?: string) => Promise<void>
   sendTerminalInput: (input: string) => Promise<void>
   stopTerminal: () => Promise<void>

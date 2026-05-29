@@ -52,4 +52,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('menu-action', handler)
   },
   sendAppState: (state) => ipcRenderer.send('app-state-change', state),
+  onSplashProgress: (callback) => {
+    const handler = (_event, data) => callback(data)
+    ipcRenderer.on('splash-progress', handler)
+    return () => ipcRenderer.removeListener('splash-progress', handler)
+  },
 })

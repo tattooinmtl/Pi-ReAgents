@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pi-ReAgents</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #0f1117;
+      color: #e2e8f0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      overflow: hidden;
+      user-select: none;
+      -webkit-app-region: drag;
+    }
+
+    .logo-wrap {
+      position: relative;
+      margin-bottom: 28px;
+    }
+
+    .logo {
+      width: 110px;
+      height: 110px;
+      border-radius: 22px;
+      object-fit: contain;
+      display: block;
+      box-shadow: 0 0 40px rgba(99, 102, 241, 0.35);
+    }
+
+    .logo-glow {
+      position: absolute;
+      inset: -12px;
+      border-radius: 34px;
+      background: radial-gradient(ellipse at center, rgba(99,102,241,0.18) 0%, transparent 70%);
+      animation: pulse 2.4s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 0.5; transform: scale(0.96); }
+      50%       { opacity: 1;   transform: scale(1.04); }
+    }
+
+    h1 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      color: #f1f5f9;
+      margin-bottom: 4px;
+    }
+
+    .version {
+      font-size: 0.75rem;
+      color: #64748b;
+      letter-spacing: 0.08em;
+      margin-bottom: 36px;
+    }
+
+    .steps {
+      width: 300px;
+      margin-bottom: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+    }
+
+    .step {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 0.8rem;
+      color: #64748b;
+      transition: color 0.3s ease;
+    }
+
+    .step.active {
+      color: #a5b4fc;
+    }
+
+    .step.done {
+      color: #4ade80;
+    }
+
+    .step-icon {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      border: 2px solid #334155;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 9px;
+      flex-shrink: 0;
+      transition: all 0.3s ease;
+    }
+
+    .step.active .step-icon {
+      border-color: #6366f1;
+      background: rgba(99,102,241,0.15);
+      animation: spin-border 1s linear infinite;
+    }
+
+    .step.done .step-icon {
+      border-color: #22c55e;
+      background: rgba(34,197,94,0.15);
+      color: #22c55e;
+    }
+
+    @keyframes spin-border {
+      0%   { box-shadow:  2px 0 0 0 #6366f1; }
+      25%  { box-shadow:  0  2px 0 0 #6366f1; }
+      50%  { box-shadow: -2px 0 0 0 #6366f1; }
+      75%  { box-shadow:  0 -2px 0 0 #6366f1; }
+      100% { box-shadow:  2px 0 0 0 #6366f1; }
+    }
+
+    .progress-wrap {
+      width: 300px;
+      height: 3px;
+      background: #1e293b;
+      border-radius: 3px;
+      overflow: hidden;
+    }
+
+    .progress-bar {
+      height: 100%;
+      background: linear-gradient(90deg, #6366f1, #818cf8);
+      border-radius: 3px;
+      width: 0%;
+      transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+      box-shadow: 0 0 8px rgba(99,102,241,0.6);
+    }
+
+    .status-text {
+      font-size: 0.7rem;
+      color: #475569;
+      margin-top: 12px;
+      letter-spacing: 0.04em;
+      min-height: 16px;
+    }
+  </style>
+</head>
+<body>
+  <div class="logo-wrap">
+    <div class="logo-glow"></div>
+    <img src="./img/LogoApp.png" alt="Pi-ReAgents" class="logo" />
+  </div>
+
+  <h1>Pi-ReAgents</h1>
+  <div class="version">v1.0.1</div>
+
+  <div class="steps" id="steps">
+    <div class="step" id="step-0">
+      <div class="step-icon"></div>
+      <span>Initializing application</span>
+    </div>
+    <div class="step" id="step-1">
+      <div class="step-icon"></div>
+      <span>Loading interface</span>
+    </div>
+    <div class="step" id="step-2">
+      <div class="step-icon"></div>
+      <span>Preparing AI engine</span>
+    </div>
+    <div class="step" id="step-3">
+      <div class="step-icon"></div>
+      <span>Starting model server</span>
+    </div>
+    <div class="step" id="step-4">
+      <div class="step-icon"></div>
+      <span>Ready</span>
+    </div>
+  </div>
+
+  <div class="progress-wrap">
+    <div class="progress-bar" id="progress-bar"></div>
+  </div>
+  <div class="status-text" id="status-text">Starting…</div>
+
+  <script>
+    const TOTAL_STEPS = 5
+
+    function setStep(index, message) {
+      // Mark previous steps done
+      for (let i = 0; i < index; i++) {
+        const el = document.getElementById('step-' + i)
+        if (el) {
+          el.classList.remove('active')
+          el.classList.add('done')
+          el.querySelector('.step-icon').textContent = '✓'
+        }
+      }
+      // Mark current step active
+      const cur = document.getElementById('step-' + index)
+      if (cur) {
+        cur.classList.remove('done')
+        cur.classList.add('active')
+        cur.querySelector('.step-icon').textContent = ''
+      }
+
+      // Progress bar
+      const pct = Math.round((index / (TOTAL_STEPS - 1)) * 100)
+      document.getElementById('progress-bar').style.width = pct + '%'
+
+      // Status text
+      if (message) document.getElementById('status-text').textContent = message
+    }
+
+    // Listen for progress from main process
+    if (window.electronAPI && window.electronAPI.onSplashProgress) {
+      window.electronAPI.onSplashProgress(({ step, message }) => {
+        setStep(step, message)
+      })
+    }
+
+    // Animate first step immediately
+    setStep(0, 'Initializing application…')
+  </script>
+</body>
+</html>

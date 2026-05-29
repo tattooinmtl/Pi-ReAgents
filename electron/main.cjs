@@ -184,6 +184,39 @@ function killServer() {
   }
 }
 
+let splashWindow = null
+
+function sendSplashProgress(step, message) {
+  try { splashWindow?.webContents.send('splash-progress', { step, message }) } catch {}
+}
+
+function createSplashWindow() {
+  splashWindow = new BrowserWindow({
+    width: 420,
+    height: 360,
+    frame: false,
+    transparent: false,
+    resizable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    center: true,
+    backgroundColor: '#0f1117',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+    icon: path.join(__dirname, '../public/img/LogoApp.ico'),
+  })
+
+  const splashPath = isDev
+    ? path.join(__dirname, '../public/splash.html')
+    : path.join(__dirname, '../dist/splash.html')
+
+  splashWindow.loadFile(splashPath)
+  splashWindow.on('closed', () => { splashWindow = null })
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,
@@ -195,7 +228,7 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
     },
-    icon: path.join(__dirname, '../public/img/LogoApp.png'),
+    icon: path.join(__dirname, '../public/img/LogoApp.ico'),
     show: false,
   })
 
@@ -204,14 +237,56 @@ function createWindow() {
   } else {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
   }
-
-  mainWindow.once('ready-to-show', () => mainWindow.show())
 }
 
-app.whenReady().then(() => {
+async function startupSequence() {
   Menu.setApplicationMenu(null)
+
+  // Ensure user-data directories exist on first launch (production)
+  if (!isDev) {
+    const dirs = [
+      path.join(process.resourcesPath, 'models'),
+      path.join(process.resourcesPath, 'workspace'),
+    ]
+    for (const d of dirs) {
+      try { if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true }) } catch {}
+    }
+  }
+
+  // Step 0 — show splash immediately
+  createSplashWindow()
+  await new Promise(r => setTimeout(r, 300))
+
+  // Step 1 — load the main window in background
+  sendSplashProgress(1, 'Loading interface…')
   createWindow()
-})
+  await new Promise(r => setTimeout(r, 400))
+
+  // Step 2 — interface bundle parsing
+  sendSplashProgress(2, 'Preparing AI engine…')
+  await new Promise(r => setTimeout(r, 500))
+
+  // Step 3 — wait for main window to be ready
+  sendSplashProgress(3, 'Starting model server…')
+  await new Promise((resolve) => {
+    if (mainWindow.webContents.isLoading()) {
+      mainWindow.webContents.once('did-finish-load', resolve)
+    } else {
+      resolve()
+    }
+  })
+  await new Promise(r => setTimeout(r, 300))
+
+  // Step 4 — ready, hand off
+  sendSplashProgress(4, 'Ready!')
+  await new Promise(r => setTimeout(r, 600))
+
+  // Close splash, show main
+  mainWindow.show()
+  if (splashWindow && !splashWindow.isDestroyed()) splashWindow.close()
+}
+
+app.whenReady().then(() => startupSequence())
 
 app.on('window-all-closed', () => {
   killServer()

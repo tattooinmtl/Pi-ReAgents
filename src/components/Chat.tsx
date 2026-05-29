@@ -275,7 +275,7 @@ export function Chat({
       <div className="chat-messages">
         {messages.length === 0 && (
           <div className="chat-welcome">
-            <img src="/img/LogoApp.png" alt="Pi-ReAgents AI" className="welcome-logo" />
+            <img src="./img/LogoApp.png" alt="Pi-ReAgents AI" className="welcome-logo" />
             <h2>Pi-ReAgents AI</h2>
             <p>Type a message or <kbd>/</kbd> for commands</p>
             {enabledSkills.length > 0 && (

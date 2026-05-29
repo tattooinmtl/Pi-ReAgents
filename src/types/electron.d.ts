@@ -52,6 +52,7 @@ export interface ElectronAPI {
   quitApp?: () => Promise<void>
   onMenuAction?: (callback: (action: string) => void) => () => void
   sendAppState?: (state: Record<string, boolean>) => void
+  onSplashProgress?: (callback: (data: { step: number; message: string }) => void) => () => void
 }
 
 declare global {

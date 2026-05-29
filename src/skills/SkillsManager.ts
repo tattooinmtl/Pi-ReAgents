@@ -3,6 +3,11 @@ import type { Skill } from '../types'
 export class SkillsManager {
   private skills: Map<string, Skill> = new Map()
   private skillsDir: string = ''
+  private onEnableCallback: ((skill: Skill) => void) | null = null
+
+  setOnEnableCallback(cb: (skill: Skill) => void) {
+    this.onEnableCallback = cb
+  }
 
   constructor(skillsDir?: string) {
     if (skillsDir) {
@@ -80,8 +85,12 @@ export class SkillsManager {
   toggleSkill(id: string): Skill | undefined {
     const skill = this.skills.get(id)
     if (skill) {
+      const wasEnabled = skill.enabled
       skill.enabled = !skill.enabled
       this.skills.set(id, skill)
+      if (!wasEnabled && skill.enabled) {
+        this.onEnableCallback?.(skill)
+      }
     }
     return skill
   }

@@ -140,3 +140,32 @@ export interface OpenFile {
   content: string
   modified: boolean
 }
+
+export interface ContextFile {
+  path: string
+  name: string
+  content: string
+}
+
+export type ChapterStatus = 'outline' | 'draft' | 'complete'
+
+export interface Chapter {
+  id: string
+  number: number
+  title: string
+  summary?: string
+  filePath?: string
+  status: ChapterStatus
+}
+
+export interface Book {
+  id: string
+  title: string
+  author: string
+  genre: string
+  description: string
+  chapters: Chapter[]
+  projectPath: string
+  createdAt: number
+  updatedAt: number
+}

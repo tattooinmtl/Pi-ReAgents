@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import type { Message, Skill, GenerationStats } from '../types'
+import type { Message, Skill, GenerationStats, ContextFile } from '../types'
 
 interface ChatProps {
   messages: Message[]
@@ -11,14 +11,49 @@ interface ChatProps {
   onStop: () => void
   onApplyCode?: (code: string, lang: string) => void
   onOpenInCodingSpace?: (code: string, lang: string) => void
+  onSendToChapter?: (text: string) => void
+  openBookFileName?: string | null
   generationStats?: GenerationStats | null
+  contextLength?: number
+  contextFiles?: ContextFile[]
+  onAttachFile?: () => void
+  onRemoveFile?: (path: string) => void
+}
+
+function ContextRing({ used, total }: { used: number; total: number }) {
+  const ratio = Math.min(used / total, 1)
+  const r = 10
+  const circ = 2 * Math.PI * r
+  const dash = circ * ratio
+  const color = ratio >= 0.9 ? '#ef4444' : ratio >= 0.75 ? '#f97316' : ratio >= 0.5 ? '#eab308' : '#22c55e'
+  const pct = Math.round(ratio * 100)
+
+  return (
+    <div className="context-ring" title={`Context: ${used.toLocaleString()} / ${total.toLocaleString()} tokens (${pct}%)`}>
+      <svg width="26" height="26" viewBox="0 0 26 26">
+        <circle cx="13" cy="13" r={r} fill="none" stroke="var(--border)" strokeWidth="2.5" />
+        <circle
+          cx="13" cy="13" r={r}
+          fill="none"
+          stroke={color}
+          strokeWidth="2.5"
+          strokeDasharray={`${dash} ${circ}`}
+          strokeLinecap="round"
+          transform="rotate(-90 13 13)"
+          style={{ transition: 'stroke-dasharray 0.4s ease, stroke 0.4s ease' }}
+        />
+      </svg>
+      <span className="context-ring-label" style={{ color }}>{pct}%</span>
+    </div>
+  )
 }
 
 const COMMANDS = [
   { cmd: 'help',      desc: 'Show all available commands' },
   { cmd: 'providers', desc: 'Manage AI providers (local, OpenAI, Ollama, custom)' },
   { cmd: 'btw',       desc: 'Add a private context note', hint: '<note>' },
-  { cmd: 'clear',     desc: 'Clear current chat' },
+  { cmd: 'compact',   desc: 'Summarise & reset context — use when ring hits ~90%' },
+  { cmd: 'clear',     desc: 'Clear current chat (no summary)' },
   { cmd: 'new',       desc: 'Start a new session' },
   { cmd: 'models',    desc: 'Open model manager' },
   { cmd: 'skills',    desc: 'Open skills manager' },
@@ -29,16 +64,22 @@ const COMMANDS = [
   { cmd: 'save',      desc: 'Save current session to memory' },
   { cmd: 'export',    desc: 'Export chat as text file' },
   { cmd: 'agents',    desc: 'Open agents panel / run multi-agent mode' },
+  { cmd: 'book',      desc: 'Open book studio — create & manage your book project', hint: '[load|build]' },
+  { cmd: 'build',     desc: 'Build the full book from chapters', hint: 'book' },
 ]
 
 function ChatMessage({
   msg,
   onApplyCode,
   onOpenInCodingSpace,
+  onSendToChapter,
+  openBookFileName,
 }: {
   msg: Message
   onApplyCode?: (c: string, l: string) => void
   onOpenInCodingSpace?: (c: string, l: string) => void
+  onSendToChapter?: (text: string) => void
+  openBookFileName?: string | null
 }) {
   // BTW notes use a distinct style — they carry a [BTW] prefix injected by App
   const isBtw = msg.role === 'system' && msg.content.startsWith('[BTW]')
@@ -101,6 +142,15 @@ function ChatMessage({
           {msg.role === 'user' ? 'You' : msg.role === 'assistant' ? 'AI' : 'System'}
         </span>
         {msg.model && <span className="message-model">{msg.model}</span>}
+        {msg.role === 'assistant' && onSendToChapter && openBookFileName && (
+          <button
+            className="btn btn-send-chapter"
+            onClick={() => onSendToChapter(msg.content)}
+            title={`Append this response to ${openBookFileName}`}
+          >
+            📖 Send to {openBookFileName}
+          </button>
+        )}
       </div>
       <div className="message-content">{blocks}</div>
     </div>
@@ -117,13 +167,24 @@ export function Chat({
   onStop,
   onApplyCode,
   onOpenInCodingSpace,
+  onSendToChapter,
+  openBookFileName,
   generationStats,
+  contextLength = 4096,
+  contextFiles = [],
+  onAttachFile,
+  onRemoveFile,
 }: ChatProps) {
   const [input, setInput] = useState('')
   const [menuOpen, setMenuOpen] = useState(false)
   const [menuIndex, setMenuIndex] = useState(0)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+
+  // Estimate context usage: prefer server-reported promptTokens, fall back to char/4 heuristic
+  const estimatedTokens = generationStats?.promptTokens && generationStats.promptTokens > 0
+    ? generationStats.promptTokens + generationStats.tokenCount
+    : Math.round(messages.reduce((acc, m) => acc + m.content.length, 0) / 4)
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -230,6 +291,8 @@ export function Chat({
             msg={msg}
             onApplyCode={onApplyCode}
             onOpenInCodingSpace={onOpenInCodingSpace}
+            onSendToChapter={onSendToChapter}
+            openBookFileName={openBookFileName}
           />
         ))}
         {isProcessing && (
@@ -261,6 +324,24 @@ export function Chat({
             <span className="gen-stat">{generationStats.elapsedSec.toFixed(1)}s</span>
           </div>
         )}
+        {contextFiles.length > 0 && (
+          <div className="context-files-bar">
+            {contextFiles.map(f => (
+              <div key={f.path} className="context-file-chip" title={f.path}>
+                <span className="context-file-icon">📄</span>
+                <span className="context-file-name">{f.name}</span>
+                <span className="context-file-size">{Math.round(f.content.length / 102.4) / 10}KB</span>
+                {onRemoveFile && (
+                  <button
+                    className="context-file-remove"
+                    onClick={() => onRemoveFile(f.path)}
+                    title={`Remove ${f.name} from context`}
+                  >×</button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
         {menuOpen && filteredCmds.length > 0 && (
           <div className="cmd-menu">
             {filteredCmds.map((c, i) => (
@@ -286,6 +367,25 @@ export function Chat({
             placeholder={isProcessing ? '/command only while AI is responding…' : 'Message… or /command'}
             rows={1}
           />
+          <ContextRing used={estimatedTokens} total={contextLength} />
+          {estimatedTokens / contextLength >= 0.85 && !isProcessing && (
+            <button
+              type="button"
+              className="btn btn-compact-warn"
+              onClick={() => onCommand('compact', '')}
+              title="Context nearly full — click to compact"
+            >
+              /compact
+            </button>
+          )}
+          {onAttachFile && (
+            <button
+              type="button"
+              className="btn btn-attach"
+              onClick={onAttachFile}
+              title="Attach file to context (injected as system context, not chat)"
+            >📎</button>
+          )}
           {isProcessing ? (
             <button type="button" className="btn btn-stop" onClick={onStop}>
               Stop

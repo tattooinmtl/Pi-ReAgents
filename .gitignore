@@ -3,6 +3,7 @@ dist/
 memory/
 !src/memory/
 workspace/
+models/
 *.gguf
 *.ggml
 llama/last-model.txt
@@ -10,3 +11,4 @@ llama/last-model.txt
 .env
 .DS_Store
 plan.md
+.claude/

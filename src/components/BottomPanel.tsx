@@ -20,6 +20,8 @@ interface BottomPanelProps {
   onOpenModels: () => void
   onOpenMemory: () => void
   onOpenAgents: () => void
+  onOpenBook: () => void
+  activeBookTitle?: string
   onLoadModel: () => void
   onRestartServer: () => void
 }
@@ -44,6 +46,8 @@ export function BottomPanel({
   onOpenModels,
   onOpenMemory,
   onOpenAgents,
+  onOpenBook,
+  activeBookTitle,
   onLoadModel,
   onRestartServer,
 }: BottomPanelProps) {
@@ -108,6 +112,13 @@ export function BottomPanel({
         </button>
         <button className="btn btn-tab" onClick={onOpenAgents} title="Multi-agent orchestration">
           Agents ({activeAgentsCount}/{agentsCount})
+        </button>
+        <button
+          className={`btn btn-tab ${activeBookTitle ? 'btn-tab-active' : ''}`}
+          onClick={onOpenBook}
+          title={activeBookTitle ? `Book: ${activeBookTitle}` : 'Book Studio — create and manage your book'}
+        >
+          📚 {activeBookTitle ? activeBookTitle.slice(0, 20) + (activeBookTitle.length > 20 ? '…' : '') : 'Book'}
         </button>
       </div>
 
